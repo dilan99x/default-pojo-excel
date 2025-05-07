@@ -43,10 +43,11 @@ public class MainframeResponseJsonService {
                 Row row = sheet.getRow(i);
                 if (row == null) continue;
 
+                // ✅ Changed field to SG Field Availability for response mapping
                 String country = getSafeCellValue(row, columnMap.get("Applicable Country"));
-                String mandatory = getSafeCellValue(row, columnMap.get("SG Mandatory"));
+                String mandatory = getSafeCellValue(row, columnMap.get(ExcelHeaderConstants.SG_FIELD_AVAILABILITY));
                 if (!"SG".equalsIgnoreCase(country) || mandatory == null || mandatory.trim().isEmpty()) {
-                    System.out.printf("❌ Row %d skipped due to country='%s' or mandatory='%s'%n", i + 1, country, mandatory);
+                    System.out.printf("❌ Row %d skipped due to country='%s' or SG Field Availability='%s'%n", i + 1, country, mandatory);
                     continue;
                 }
 
@@ -94,8 +95,6 @@ public class MainframeResponseJsonService {
 
         return result;
     }
-
-    // Helper methods (same as before)...
 
     private int findResponseHeaderRow(Sheet sheet) {
         for (int i = 0; i <= sheet.getLastRowNum(); i++) {
