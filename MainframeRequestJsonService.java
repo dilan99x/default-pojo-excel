@@ -4,6 +4,7 @@ import com.dbs.plugin.constants.ExcelHeaderConstants;
 import com.dbs.plugin.model.ApiField;
 import com.dbs.plugin.model.ApiMapping;
 import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.util.CellRangeAddress;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -24,13 +25,12 @@ public class MainframeRequestJsonService {
             String sectionHeader = findMainHeaderBefore(sheet, headerRowIndex);
             if (sectionHeader == null) return result;
 
-            // ✅ Remove " - Request" safely and construct clean names
-            String baseName = sectionHeader.replaceAll("\\s*-\\s*Request", "").trim();
+            String baseName = sectionHeader.replace(ExcelHeaderConstants.REQUEST_MARKER, "").trim().replace(" -", "").replace("-", "");
             String mappingId = baseName + "_mainframe_request";
             String fileName = mappingId + "_transformer.json";
 
             Row headerRow = sheet.getRow(headerRowIndex);
-            Map<String, Integer> columnMap = buildColumnIndexMap(headerRow);
+            Map<String, Integer> columnMap = buildColumnIndexMap(sheet, headerRow);
 
             List<ApiField> fields = new ArrayList<>();
 
@@ -84,19 +84,47 @@ public class MainframeRequestJsonService {
         return result;
     }
 
-    private Map<String, Integer> buildColumnIndexMap(Row headerRow) {
+    // ✅ Merged header support
+    private Map<String, Integer> buildColumnIndexMap(Sheet sheet, Row headerRow) {
         Map<String, Integer> map = new HashMap<>();
         if (headerRow == null) return map;
-        for (Cell cell : headerRow) {
-            if (cell.getCellType() == CellType.STRING) {
-                String key = cell.getStringCellValue()
+
+        for (int colIndex = 0; colIndex < headerRow.getLastCellNum(); colIndex++) {
+            String header = getMergedCellValue(sheet, headerRow.getRowNum(), colIndex);
+            if (header != null && !header.isBlank()) {
+                header = header
                         .replace('\u00A0', ' ')
+                        .replaceAll("[^\\x20-\\x7E]", "")
                         .replaceAll("[\\s\\u00A0]+", " ")
                         .trim();
-                map.put(key, cell.getColumnIndex());
+                map.put(header, colIndex);
             }
         }
         return map;
+    }
+
+    private String getMergedCellValue(Sheet sheet, int rowIndex, int colIndex) {
+        for (int i = 0; i < sheet.getNumMergedRegions(); i++) {
+            CellRangeAddress region = sheet.getMergedRegion(i);
+            if (region.isInRange(rowIndex, colIndex)) {
+                Row mergedRow = sheet.getRow(region.getFirstRow());
+                if (mergedRow != null) {
+                    Cell mergedCell = mergedRow.getCell(region.getFirstColumn());
+                    if (mergedCell != null && mergedCell.getCellType() == CellType.STRING) {
+                        return mergedCell.getStringCellValue();
+                    }
+                }
+            }
+        }
+
+        Row row = sheet.getRow(rowIndex);
+        if (row != null) {
+            Cell cell = row.getCell(colIndex);
+            if (cell != null && cell.getCellType() == CellType.STRING) {
+                return cell.getStringCellValue();
+            }
+        }
+        return null;
     }
 
     private int findHeaderRow(Sheet sheet, int startRow) {
