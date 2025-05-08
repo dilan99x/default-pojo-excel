@@ -1,4 +1,5 @@
 package com.dbs.plugin.service;
+//test
 
 import com.dbs.plugin.constants.ExcelHeaderConstants;
 import com.dbs.plugin.model.ApiField;
@@ -30,7 +31,10 @@ public class MainframeResponseJsonService {
                 return result;
             }
 
-            String baseName = sectionHeader.replace(ExcelHeaderConstants.RESPONSE_MARKER, "").trim().replace(" -", "").replace("-", "");
+            String baseName = sectionHeader.replace(ExcelHeaderConstants.RESPONSE_MARKER, "")
+                                           .replace(" -", "")
+                                           .replace("-", "")
+                                           .trim();
             String mappingId = baseName + "_mainframe_response";
             String fileName = mappingId + "_transformer.json";
 
@@ -43,41 +47,34 @@ public class MainframeResponseJsonService {
                 Row row = sheet.getRow(i);
                 if (row == null) continue;
 
-                // ✅ Changed field to SG Field Availability for response mapping
-                String country = getSafeCellValue(row, columnMap.get("Applicable Country"));
-                String mandatory = getSafeCellValue(row, columnMap.get(ExcelHeaderConstants.SG_FIELD_AVAILABILITY));
+                String country = getSafeCellValue(row, columnMap.get(normalizeHeader("Applicable Country")));
+                String mandatory = getSafeCellValue(row, columnMap.get(normalizeHeader("SG Field Availability")));
+
                 if (!"SG".equalsIgnoreCase(country) || mandatory == null || mandatory.trim().isEmpty()) {
-                    System.out.printf("❌ Row %d skipped due to country='%s' or SG Field Availability='%s'%n", i + 1, country, mandatory);
                     continue;
                 }
 
-                String source = getSafeCellValue(row, columnMap.get(ExcelHeaderConstants.MAINFRAME_FIELDNAME));
-                String sourceType = getSafeCellValue(row, columnMap.get(ExcelHeaderConstants.MAINFRAME_DATATYPE));
-                String target = getSafeCellValue(row, columnMap.get(ExcelHeaderConstants.GLOBAL_API_FIELDNAME));
-                String targetType = getSafeCellValue(row, columnMap.get(ExcelHeaderConstants.GLOBAL_API_DATATYPE));
-                String operation = getSafeCellValue(row, columnMap.get(ExcelHeaderConstants.MAINFRAME_OPERATION));
-                String transform = getSafeCellValue(row, columnMap.get(ExcelHeaderConstants.MAINFRAME_TRANSFORM_VALUE));
+                String source = getSafeCellValue(row, columnMap.get(normalizeHeader(ExcelHeaderConstants.MAINFRAME_FIELDNAME)));
+                String sourceType = getSafeCellValue(row, columnMap.get(normalizeHeader(ExcelHeaderConstants.MAINFRAME_DATATYPE)));
+                String target = getSafeCellValue(row, columnMap.get(normalizeHeader(ExcelHeaderConstants.GLOBAL_API_FIELDNAME)));
+                String targetType = getSafeCellValue(row, columnMap.get(normalizeHeader(ExcelHeaderConstants.GLOBAL_API_DATATYPE)));
+                String operation = getSafeCellValue(row, columnMap.get(normalizeHeader(ExcelHeaderConstants.MAINFRAME_OPERATION)));
+                String transform = getSafeCellValue(row, columnMap.get(normalizeHeader(ExcelHeaderConstants.MAINFRAME_TRANSFORM_VALUE)));
 
                 if (
                         source.equalsIgnoreCase(ExcelHeaderConstants.MAINFRAME_FIELDNAME) ||
                                 target.equalsIgnoreCase(ExcelHeaderConstants.GLOBAL_API_FIELDNAME)
-                ) {
-                    System.out.printf("❌ Row %d skipped due to header repetition.%n", i + 1);
-                    continue;
-                }
+                ) continue;
 
                 if (!source.isEmpty() || !target.isEmpty()) {
                     fields.add(new ApiField(
-                            target,
-                            targetType.isEmpty() ? null : targetType,
                             source,
                             sourceType.isEmpty() ? null : sourceType,
+                            target,
+                            targetType.isEmpty() ? null : targetType,
                             operation.isEmpty() ? null : operation,
                             transform.isEmpty() ? null : transform.replace("\n", "").replace("\r", "")
                     ));
-                    System.out.printf("✅ Row %d mapped: %s → %s%n", i + 1, source, target);
-                } else {
-                    System.out.printf("❌ Row %d skipped due to empty source/target.%n", i + 1);
                 }
             }
 
@@ -96,6 +93,26 @@ public class MainframeResponseJsonService {
         return result;
     }
 
+    private String normalizeHeader(String raw) {
+        return raw.replace('\u00A0', ' ')
+                  .replaceAll("[\\s\\u00A0]+", " ")
+                  .trim();
+    }
+
+    private Map<String, Integer> buildColumnIndexMap(Row headerRow) {
+        Map<String, Integer> map = new HashMap<>();
+        if (headerRow == null) return map;
+
+        for (Cell cell : headerRow) {
+            if (cell.getCellType() == CellType.STRING) {
+                String key = normalizeHeader(cell.getStringCellValue());
+                map.put(key, cell.getColumnIndex());
+            }
+        }
+
+        return map;
+    }
+
     private int findResponseHeaderRow(Sheet sheet) {
         for (int i = 0; i <= sheet.getLastRowNum(); i++) {
             Row row = sheet.getRow(i);
@@ -107,7 +124,7 @@ public class MainframeResponseJsonService {
                         if (candidate == null) continue;
                         for (Cell inner : candidate) {
                             if (inner.getCellType() == CellType.STRING &&
-                                    inner.getStringCellValue().trim().equalsIgnoreCase(ExcelHeaderConstants.GLOBAL_API_FIELDNAME)) {
+                                    normalizeHeader(inner.getStringCellValue()).equalsIgnoreCase(normalizeHeader(ExcelHeaderConstants.GLOBAL_API_FIELDNAME))) {
                                 return j;
                             }
                         }
@@ -132,21 +149,6 @@ public class MainframeResponseJsonService {
             }
         }
         return null;
-    }
-
-    private Map<String, Integer> buildColumnIndexMap(Row headerRow) {
-        Map<String, Integer> map = new HashMap<>();
-        if (headerRow == null) return map;
-        for (Cell cell : headerRow) {
-            if (cell.getCellType() == CellType.STRING) {
-                String key = cell.getStringCellValue()
-                        .replace('\u00A0', ' ')
-                        .replaceAll("[\\s\\u00A0]+", " ")
-                        .trim();
-                map.put(key, cell.getColumnIndex());
-            }
-        }
-        return map;
     }
 
     private String getSafeCellValue(Row row, Integer colIndex) {
