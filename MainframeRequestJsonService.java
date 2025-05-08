@@ -1,5 +1,6 @@
 package com.dbs.plugin.service;
 
+//test
 import com.dbs.plugin.constants.ExcelHeaderConstants;
 import com.dbs.plugin.model.ApiField;
 import com.dbs.plugin.model.ApiMapping;
@@ -29,8 +30,7 @@ public class MainframeRequestJsonService {
             String mappingId = baseName + "_mainframe_request";
             String fileName = mappingId + "_transformer.json";
 
-            Row headerRow = sheet.getRow(headerRowIndex);
-            Map<String, Integer> columnMap = buildColumnIndexMap(sheet, headerRow);
+            Map<String, Integer> columnMap = buildColumnIndexMap(sheet, headerRowIndex);
 
             List<ApiField> fields = new ArrayList<>();
 
@@ -84,47 +84,30 @@ public class MainframeRequestJsonService {
         return result;
     }
 
-    // ✅ Merged header support
-    private Map<String, Integer> buildColumnIndexMap(Sheet sheet, Row headerRow) {
+    private Map<String, Integer> buildColumnIndexMap(Sheet sheet, int headerRowIndex) {
         Map<String, Integer> map = new HashMap<>();
+        Row headerRow = sheet.getRow(headerRowIndex);
         if (headerRow == null) return map;
 
-        for (int colIndex = 0; colIndex < headerRow.getLastCellNum(); colIndex++) {
-            String header = getMergedCellValue(sheet, headerRow.getRowNum(), colIndex);
-            if (header != null && !header.isBlank()) {
-                header = header
-                        .replace('\u00A0', ' ')
-                        .replaceAll("[^\\x20-\\x7E]", "")
-                        .replaceAll("[\\s\\u00A0]+", " ")
-                        .trim();
-                map.put(header, colIndex);
+        for (int col = 0; col < headerRow.getLastCellNum(); col++) {
+            String key = getMergedOrDirectHeader(sheet, headerRowIndex, col);
+            if (!key.isEmpty()) {
+                map.put(key, col);
             }
         }
         return map;
     }
 
-    private String getMergedCellValue(Sheet sheet, int rowIndex, int colIndex) {
-        for (int i = 0; i < sheet.getNumMergedRegions(); i++) {
-            CellRangeAddress region = sheet.getMergedRegion(i);
-            if (region.isInRange(rowIndex, colIndex)) {
-                Row mergedRow = sheet.getRow(region.getFirstRow());
-                if (mergedRow != null) {
-                    Cell mergedCell = mergedRow.getCell(region.getFirstColumn());
-                    if (mergedCell != null && mergedCell.getCellType() == CellType.STRING) {
-                        return mergedCell.getStringCellValue();
-                    }
-                }
+    private String getMergedOrDirectHeader(Sheet sheet, int rowIdx, int colIdx) {
+        for (CellRangeAddress mergedRegion : sheet.getMergedRegions()) {
+            if (mergedRegion.isInRange(rowIdx, colIdx)) {
+                Cell cell = sheet.getRow(mergedRegion.getFirstRow()).getCell(mergedRegion.getFirstColumn());
+                return getCellValue(cell);
             }
         }
-
-        Row row = sheet.getRow(rowIndex);
-        if (row != null) {
-            Cell cell = row.getCell(colIndex);
-            if (cell != null && cell.getCellType() == CellType.STRING) {
-                return cell.getStringCellValue();
-            }
-        }
-        return null;
+        Row row = sheet.getRow(rowIdx);
+        if (row == null) return "";
+        return getCellValue(row.getCell(colIdx));
     }
 
     private int findHeaderRow(Sheet sheet, int startRow) {
