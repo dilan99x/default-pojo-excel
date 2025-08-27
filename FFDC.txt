@@ -1,33 +1,44 @@
 <configuration>
+  <!-- pull Spring props -->
   <springProperty scope="context" name="APP_NAME" source="spring.application.name"/>
   <springProperty scope="context" name="ENV"      source="spring.application.env"/>
 
-  <!-- real (synchronous) appender -->
+  <!-- SYNC appender used by most loggers -->
   <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
     <layout class="ch.qos.logback.classic.PatternLayout">
-      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36}
-        app.id=${APP_NAME} env=${ENV} correlation.id=%X{x-correlation-id:-''} %msg%n
-      </pattern>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} app.id=${APP_NAME} env=${ENV} correlation.id=%X{x-correlation-id:-''} %msg%n</pattern>
     </layout>
   </appender>
 
-  <!-- async wrapper -->
-  <appender name="ASYNC_CONSOLE" class="ch.qos.logback.classic.AsyncAppender">
-    <!-- Tune these to your traffic -->
-    <queueSize>8192</queueSize>                <!-- ring buffer size -->
-    <discardingThreshold>0</discardingThreshold><!-- 0 = don't drop DEBUG/TRACE under load -->
-    <neverBlock>true</neverBlock>              <!-- return immediately; drop when full -->
-    <!-- if you prefer back-pressure instead of dropping, set neverBlock to false -->
+  <!-- ASYNC wrapper used ONLY by the payload logger -->
+  <appender name="ASYNC_PAYLOAD" class="ch.qos.logback.classic.AsyncAppender">
+    <queueSize>8192</queueSize>
+    <discardingThreshold>0</discardingThreshold> <!-- don't auto-drop DEBUG/TRACE -->
+    <neverBlock>true</neverBlock>                 <!-- drop when full instead of blocking request thread -->
     <appender-ref ref="CONSOLE"/>
   </appender>
 
-  <!-- your package/category -->
+  <!-- EXAMPLE: your other package(s) stay synchronous -->
   <logger name="com.dbs.cb" level="INFO" additivity="false">
-    <appender-ref ref="ASYNC_CONSOLE"/>
+    <appender-ref ref="CONSOLE"/>
   </logger>
 
-  <!-- root goes to async console as well -->
-  <root level="INFO">
-    <appender-ref ref="ASYNC_CONSOLE"/>
+  <!-- CHOOSE ONE of the following based on how you get the logger in code -->
+
+  <!-- (A) If you use LoggerFactory.getLogger(AsyncAPIPayloadLogger.class) -->
+  <logger name="com.dbs.c2e.mstd.log.AsyncAPIPayloadLogger" level="INFO" additivity="false">
+    <appender-ref ref="ASYNC_PAYLOAD"/>
+  </logger>
+
+  <!-- (B) If you use LoggerFactory.getLogger("AsyncAPIPayloadLogger") -->
+  <!--
+  <logger name="AsyncAPIPayloadLogger" level="INFO" additivity="false">
+    <appender-ref ref="ASYNC_PAYLOAD"/>
+  </logger>
+  -->
+
+  <!-- Root remains synchronous -->
+  <root level="ERROR">
+    <appender-ref ref="CONSOLE"/>
   </root>
 </configuration>
