@@ -1,109 +1,33 @@
-{
-  "mappingId": "dynamic_dep_test",
-  "sourceApi": "test-src",
-  "targetApi": "test-tgt",
-  "dependencies": ["/orders/*/type", "/meta/country"],
-  "mappedFields": [
-    {
-      "source": "/orders/*/id",
-      "target": "/result/*/orderId",
-      "targetDataType": "string",
-      "dependencies": {
-        "/orders/*/type": "A",
-        "/meta/country": "sg"
-      }
-    },
-    {
-      "source": "/orders/*/amount",
-      "target": "/result/*/amt",
-      "targetDataType": "integer",
-      "dependencies": {
-        "/orders/*/type": "A",
-        "/meta/country": "sg"
-      }
-    }
-  ]
-}
+<configuration>
+  <springProperty scope="context" name="APP_NAME" source="spring.application.name"/>
+  <springProperty scope="context" name="ENV"      source="spring.application.env"/>
 
+  <!-- real (synchronous) appender -->
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <layout class="ch.qos.logback.classic.PatternLayout">
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36}
+        app.id=${APP_NAME} env=${ENV} correlation.id=%X{x-correlation-id:-''} %msg%n
+      </pattern>
+    </layout>
+  </appender>
 
-{
-  "orders": [
-    { "type": "A", "id": "X1", "amount": "10" },
-    { "type": "B", "id": "X2", "amount": "20" },
-    { "type": "A", "id": "X3", "amount": "30" }
-  ],
-  "meta": { "country": "sg" }
-}
+  <!-- async wrapper -->
+  <appender name="ASYNC_CONSOLE" class="ch.qos.logback.classic.AsyncAppender">
+    <!-- Tune these to your traffic -->
+    <queueSize>8192</queueSize>                <!-- ring buffer size -->
+    <discardingThreshold>0</discardingThreshold><!-- 0 = don't drop DEBUG/TRACE under load -->
+    <neverBlock>true</neverBlock>              <!-- return immediately; drop when full -->
+    <!-- if you prefer back-pressure instead of dropping, set neverBlock to false -->
+    <appender-ref ref="CONSOLE"/>
+  </appender>
 
+  <!-- your package/category -->
+  <logger name="com.dbs.cb" level="INFO" additivity="false">
+    <appender-ref ref="ASYNC_CONSOLE"/>
+  </logger>
 
-
-
-
-
-{
-  "result": [
-    { "orderId": "X1", "amt": 10 },
-    { "orderId": "X3", "amt": 30 }
-  ]
-}
-
-
-
-
-{
-  "mappingId": "nested_dep_test",
-  "sourceApi": "test-src",
-  "targetApi": "test-tgt",
-  "dependencies": ["/groups/*/items/*/flag", "/meta/env"],
-  "mappedFields": [
-    {
-      "source": "/groups/*/name",
-      "target": "/out/*/groupName",
-      "targetDataType": "string"
-    },
-    {
-      "source": "/groups/*/items/*/code",
-      "target": "/out/*/eligibleItems/*/code",
-      "targetDataType": "string",
-      "dependencies": {
-        "/groups/*/items/*/flag": "Y",
-        "/meta/env": "dev"
-      }
-    }
-  ]
-}
-
-
-
-
-{
-  "groups": [
-    {
-      "name": "G1",
-      "items": [
-        { "code": "I1", "flag": "Y" },
-        { "code": "I2", "flag": "N" }
-      ]
-    },
-    {
-      "name": "G2",
-      "items": [
-        { "code": "I3", "flag": "Y" }
-      ]
-    }
-  ],
-  "meta": { "env": "dev" }
-}
-
-
-
-
-
-
-{
-  "out": [
-    { "groupName": "G1", "eligibleItems": [ { "code": "I1" } ] },
-    { "groupName": "G2", "eligibleItems": [ { "code": "I3" } ] }
-  ]
-}
-
+  <!-- root goes to async console as well -->
+  <root level="INFO">
+    <appender-ref ref="ASYNC_CONSOLE"/>
+  </root>
+</configuration>
