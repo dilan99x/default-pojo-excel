@@ -1,44 +1,41 @@
-<configuration>
-  <!-- pull Spring props -->
-  <springProperty scope="context" name="APP_NAME" source="spring.application.name"/>
-  <springProperty scope="context" name="ENV"      source="spring.application.env"/>
+# application.yml
+spring:
+  kafka:
+    consumer:
+      bootstrap-servers: ${KAFKA_BOOTSTRAP}
+      group-id: event-service-v1
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      # Pull tuning
+      max-poll-records: 500          # start 200–1000; tune with latency
+      fetch-min-bytes: 65536         # coalesce small messages
+      fetch-max-wait-ms: 50          # wait a bit to batch
+      max-partition-fetch-bytes: 1048576  # align with typical message size
+      # Stability
+      session-timeout-ms: 15000
+      heartbeat-interval-ms: 5000
+      auto-offset-reset: latest
+      partition-assignment-strategy: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
 
-  <!-- SYNC appender used by most loggers -->
-  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-    <layout class="ch.qos.logback.classic.PatternLayout">
-      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} app.id=${APP_NAME} env=${ENV} correlation.id=%X{x-correlation-id:-''} %msg%n</pattern>
-    </layout>
-  </appender>
 
-  <!-- ASYNC wrapper used ONLY by the payload logger -->
-  <appender name="ASYNC_PAYLOAD" class="ch.qos.logback.classic.AsyncAppender">
-    <queueSize>8192</queueSize>
-    <discardingThreshold>0</discardingThreshold> <!-- don't auto-drop DEBUG/TRACE -->
-    <neverBlock>true</neverBlock>                 <!-- drop when full instead of blocking request thread -->
-    <appender-ref ref="CONSOLE"/>
-  </appender>
 
-  <!-- EXAMPLE: your other package(s) stay synchronous -->
-  <logger name="com.dbs.cb" level="INFO" additivity="false">
-    <appender-ref ref="CONSOLE"/>
-  </logger>
 
-  <!-- CHOOSE ONE of the following based on how you get the logger in code -->
 
-  <!-- (A) If you use LoggerFactory.getLogger(AsyncAPIPayloadLogger.class) -->
-  <logger name="com.dbs.c2e.mstd.log.AsyncAPIPayloadLogger" level="INFO" additivity="false">
-    <appender-ref ref="ASYNC_PAYLOAD"/>
-  </logger>
-
-  <!-- (B) If you use LoggerFactory.getLogger("AsyncAPIPayloadLogger") -->
-  <!--
-  <logger name="AsyncAPIPayloadLogger" level="INFO" additivity="false">
-    <appender-ref ref="ASYNC_PAYLOAD"/>
-  </logger>
-  -->
-
-  <!-- Root remains synchronous -->
-  <root level="ERROR">
-    <appender-ref ref="CONSOLE"/>
-  </root>
-</configuration>
+// KafkaConsumerConfig.java
+@Bean
+ConcurrentKafkaListenerContainerFactory<byte[], byte[]> byteConsumerFactory(
+        ConsumerFactory<byte[], byte[]> cf) {
+    var f = new ConcurrentKafkaListenerContainerFactory<byte[], byte[]>();
+    f.setConsumerFactory(cf);
+    f.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+    f.getContainerProperties().setObservationEnabled(true); // Micrometer
+    f.setConcurrency(3);                 // start = min( #partitions, CPU cores ), then tune
+    f.setCommonErrorHandler(new DefaultErrorHandler(
+        // backoff between redeliveries (framework level); you’ll still DLQ in your code
+        new ExponentialBackOffWithMaxRetries(3) {{ setInitialInterval(200); setMultiplier(2.0); setMaxInterval(3000); }}
+    ));
+    // Optional: pause/resume on processor backpressure
+    f.setContainerCustomizer(container -> container.setPauseImmediate(true));
+    return f;
+}
