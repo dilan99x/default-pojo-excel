@@ -1,0 +1,75 @@
+{
+  "data": [
+    {
+      "sourceAccountNumber": "string",
+      "accountCurrency": "string",
+      "currencyDecimal": 0,
+      "accountManagerId": "string",
+      "sourceCustomerId": "string",
+      "staffIndicator": true,
+      "productType": "string",
+      "schemeCode": "string",
+      "productIndicatorCode": "string",
+      "productIndicator": "string",
+      "childAccounts": [
+        {
+          "sourceAccountNumber": "string",
+          "accountCurrency": "string",
+          "currencyDecimal": 0,
+          "accountManagerId": "string",
+          "sourceCustomerId": "string",
+          "productIndicatorCode": "string",
+          "productIndicator": "string",
+          "upiNumber": 0
+        }
+      ],
+      "mobileMoneyIdentifier": "string"
+    },
+    {
+      "sourceAccountNumber": "string",
+      "accountCurrency": "string",
+      "currencyDecimal": 0,
+      "accountManagerId": "string",
+      "sourceCustomerId": "string",
+      "staffIndicator": true,
+      "productType": "string",
+      "schemeCode": "string",
+      "productIndicatorCode": "string",
+      "productIndicator": "string",
+      "childAccounts": [
+        {
+          "sourceAccountNumber": "string",
+          "accountCurrency": "string",
+          "currencyDecimal": 0,
+          "accountManagerId": "string",
+          "sourceCustomerId": "string",
+          "productIndicatorCode": "string",
+          "productIndicator": "string",
+          "upiNumber": 0
+        }
+      ],
+      "ifscCode": "string"
+    }
+  ],
+  "error": [
+    {
+      "timestamp": "string",
+      "x-correlation-id": "string",
+      "sourceAccountNumber": "string",
+      "pnsProductCode": "string",
+      "errorType": "string",
+      "errorCode": "string",
+      "errorDescription": "string",
+      "restError": [
+        {
+          "errorCode": "string",
+          "errorDescription": "string",
+          "subErrorDetails": {
+            "errorSubCode": "string",
+            "errorSubDescription": "string"
+          }
+        }
+      ]
+    }
+  ]
+}
