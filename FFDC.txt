@@ -106,4 +106,14 @@ private FieldMapping cloneForPointers(FieldMapping src, String newSourcePtr, Str
 
 
 
+if (StringUtils.isNotBlank(field.getCustomTransformer())) {
+    // If this field points into a list, run the per-item projection path.
+    if (field.getSourcePointer() != null && field.getSourcePointer().contains("/*")) {
+        handleArrayProjectionsWithCustom(sourceNode, field, targetNode, config);
+    } else {
+        handleCustomTransformation(sourceNode, targetNode, field, config);
+    }
+    continue;
+}
+
 
