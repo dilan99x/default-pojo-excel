@@ -1,6 +1,6 @@
 {
-  "mappingId": "account_test_simple",
-  "name": "Account list request/response mapping with account conversion",
+  "mappingId": "account_list_full_mapping",
+  "name": "Account list mapping (request/response)",
   "apiType": "account-list",
   "source": "Global API Fieldname",
   "target": "Global API Fieldname",
@@ -12,12 +12,7 @@
       "target": "/data/*/accountNumber",
       "targetDataType": "string",
       "customTransformer": "accountNumberTransformer"
-    },
-    {
-      "source": "/data/*/productIndicatorCode",
-      "sourceDataType": "string",
-      "target": "/data/*/productCode",
-      "targetDataType": "string"
+      /* For response flow via MDC, use: "responseAccountNumberTransformer" */
     },
     {
       "source": "/data/*/accountCurrency",
@@ -26,21 +21,57 @@
       "targetDataType": "string"
     },
     {
+      "source": "/data/*/currencyDecimal",
+      "sourceDataType": "long",
+      "target": "/data/*/currencyDecimal",
+      "targetDataType": "long"
+    },
+    {
       "source": "/data/*/accountManagerId",
       "sourceDataType": "string",
       "target": "/data/*/accountManagerId",
       "targetDataType": "string"
     },
     {
-      "source": "/data/*/mobileMoneyIdentifier",
+      "source": "/data/*/sourceCustomerId",
       "sourceDataType": "string",
-      "target": "/data/*/mobileMoneyIdentifier",
+      "target": "/data/*/sourceCustomerId",
       "targetDataType": "string"
     },
     {
-      "source": "/data/*/ifscCode",
+      "source": "/data/*/staffIndicator",
+      "sourceDataType": "boolean",
+      "target": "/data/*/staffIndicator",
+      "targetDataType": "boolean"
+    },
+    {
+      "source": "/data/*/productType",
       "sourceDataType": "string",
-      "target": "/data/*/ifscCode",
+      "target": "/data/*/productType",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/schemeCode",
+      "sourceDataType": "string",
+      "target": "/data/*/schemeCode",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/productIndicatorCode",
+      "sourceDataType": "string",
+      "target": "/data/*/productCode",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/productIndicator",
+      "sourceDataType": "string",
+      "target": "/data/*/productIndicator",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/mobileMoneyIdentifier",
+      "sourceDataType": "string",
+      "target": "/data/*/mobileMoneyIdentifier",
       "targetDataType": "string"
     },
 
@@ -51,12 +82,7 @@
       "target": "/data/*/childAccounts/*/accountNumber",
       "targetDataType": "string",
       "customTransformer": "accountNumberTransformer"
-    },
-    {
-      "source": "/data/*/childAccounts/*/productIndicatorCode",
-      "sourceDataType": "string",
-      "target": "/data/*/childAccounts/*/productCode",
-      "targetDataType": "string"
+      /* For response flow via MDC, use: "responseAccountNumberTransformer" */
     },
     {
       "source": "/data/*/childAccounts/*/accountCurrency",
@@ -65,26 +91,43 @@
       "targetDataType": "string"
     },
     {
+      "source": "/data/*/childAccounts/*/currencyDecimal",
+      "sourceDataType": "long",
+      "target": "/data/*/childAccounts/*/currencyDecimal",
+      "targetDataType": "long"
+    },
+    {
       "source": "/data/*/childAccounts/*/accountManagerId",
       "sourceDataType": "string",
       "target": "/data/*/childAccounts/*/accountManagerId",
       "targetDataType": "string"
     },
-
-    /* ---------------- error[*] (echo error context) ---------------- */
     {
-      "source": "/error/*/sourceAccountNumber",
+      "source": "/data/*/childAccounts/*/sourceCustomerId",
       "sourceDataType": "string",
-      "target": "/error/*/accountNumber",
-      "targetDataType": "string",
-      "customTransformer": "accountNumberTransformer"
-    },
-    {
-      "source": "/error/*/pnsProductCode",
-      "sourceDataType": "string",
-      "target": "/error/*/productCode",
+      "target": "/data/*/childAccounts/*/sourceCustomerId",
       "targetDataType": "string"
     },
+    {
+      "source": "/data/*/childAccounts/*/productIndicatorCode",
+      "sourceDataType": "string",
+      "target": "/data/*/childAccounts/*/productCode",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/childAccounts/*/productIndicator",
+      "sourceDataType": "string",
+      "target": "/data/*/childAccounts/*/productIndicator",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/childAccounts/*/upiNumber",
+      "sourceDataType": "long",
+      "target": "/data/*/childAccounts/*/upiNumber",
+      "targetDataType": "long"
+    },
+
+    /* ---------------- error[*] (echo error context) ---------------- */
     {
       "source": "/error/*/timestamp",
       "sourceDataType": "string",
@@ -95,6 +138,20 @@
       "source": "/error/*/x-correlation-id",
       "sourceDataType": "string",
       "target": "/error/*/xCorrelationId",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/error/*/sourceAccountNumber",
+      "sourceDataType": "string",
+      "target": "/error/*/accountNumber",
+      "targetDataType": "string",
+      "customTransformer": "accountNumberTransformer"
+      /* For response flow via MDC, use: "responseAccountNumberTransformer" */
+    },
+    {
+      "source": "/error/*/pnsProductCode",
+      "sourceDataType": "string",
+      "target": "/error/*/productCode",
       "targetDataType": "string"
     },
     {
@@ -113,6 +170,32 @@
       "source": "/error/*/errorDescription",
       "sourceDataType": "string",
       "target": "/error/*/errorDescription",
+      "targetDataType": "string"
+    },
+
+    /* ---------------- error[*].restError[*] ---------------- */
+    {
+      "source": "/error/*/restError/*/errorCode",
+      "sourceDataType": "string",
+      "target": "/error/*/restError/*/errorCode",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/error/*/restError/*/errorDescription",
+      "sourceDataType": "string",
+      "target": "/error/*/restError/*/errorDescription",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/error/*/restError/*/subErrorDetails/errorSubCode",
+      "sourceDataType": "string",
+      "target": "/error/*/restError/*/subErrorDetails/errorSubCode",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/error/*/restError/*/subErrorDetails/errorSubDescription",
+      "sourceDataType": "string",
+      "target": "/error/*/restError/*/subErrorDetails/errorSubDescription",
       "targetDataType": "string"
     }
   ]
