@@ -1,0 +1,76 @@
+/**
+ * Safely sets a value at the given JSON Pointer within the target root.
+ * Fix: guard against raw '*' tokens and ensure correct container creation.
+ */
+public void setValueAtPointer(String pointerExpr, JsonNode value, JsonNode targetObjRoot) {
+    if (!pointerExpr.startsWith("/")) {
+        throw new IllegalArgumentException("Invalid JSON Pointer: " + pointerExpr);
+    }
+
+    String[] tokens = pointerExpr.substring(1).split("/");
+    JsonNode current = targetObjRoot;
+
+    for (int i = 0; i < tokens.length - 1; i++) {
+        String token = decodePointerToken(tokens[i]);
+
+        // 🛑 Guard: '*' should never reach here
+        if ("*".equals(token)) {
+            throw new TransformationException(
+                "Illegal pointer token '*' in setValueAtPointer. Pointers must be expanded before calling."
+            );
+        }
+
+        String nextToken = tokens[i + 1];
+        boolean nextIsArrayIndex = isNumeric(nextToken);
+
+        if (current instanceof ObjectNode objectNode) {
+            if (!objectNode.has(token) || objectNode.get(token).isNull() || objectNode.get(token).isMissingNode()) {
+                // decide based on next token whether to create an array or object
+                JsonNode newNode = nextIsArrayIndex
+                        ? objectMapper.createArrayNode()
+                        : objectMapper.createObjectNode();
+                objectNode.set(token, newNode);
+            }
+            current = objectNode.get(token);
+
+        } else if (current instanceof ArrayNode arrayNode) {
+            int index = Integer.parseInt(token);
+            ensureArraySize(arrayNode, index);
+            JsonNode child = arrayNode.get(index);
+            if (child == null || child.isNull() || child.isMissingNode()) {
+                JsonNode newNode = nextIsArrayIndex
+                        ? objectMapper.createArrayNode()
+                        : objectMapper.createObjectNode();
+                arrayNode.set(index, newNode);
+                current = newNode;
+            } else {
+                current = child;
+            }
+
+        } else {
+            throw new TransformationException(
+                "Unexpected node type while traversing pointer: " + current.getNodeType()
+            );
+        }
+    }
+
+    // Final token (where to actually set the value)
+    String finalToken = tokens[tokens.length - 1];
+    if ("*".equals(finalToken)) {
+        throw new TransformationException(
+            "Illegal final pointer token '*' in setValueAtPointer. Must be expanded to an index."
+        );
+    }
+
+    if (current instanceof ObjectNode objectNode) {
+        objectNode.set(finalToken, value);
+    } else if (current instanceof ArrayNode arrayNode) {
+        int index = Integer.parseInt(finalToken);
+        ensureArraySize(arrayNode, index);
+        arrayNode.set(index, value);
+    } else {
+        throw new TransformationException(
+            "Unexpected node type at final pointer step: " + current.getNodeType()
+        );
+    }
+}
