@@ -1,0 +1,180 @@
+private void handleCustomTransformation(JsonNode sourceNode, JsonNode targetNode,
+                                        FieldMapping field, MappingConfig config) {
+    if ((field.getSourcePointer() != null && field.getSourcePointer().contains("/*"))
+            || (field.getTargetPointer() != null && field.getTargetPointer().contains("/*"))) {
+        // NEW: array-aware path for custom transformers
+        handleArrayProjectionsWithCustom(sourceNode, field, targetNode, config);
+        return;
+    }
+
+    // existing non-array path
+    CustomTransformer<?> transformer =
+            applicationContext.getBean(field.getCustomTransformer(), CustomTransformer.class);
+    Object transformed = transformer.transform(sourceNode, field, config);
+    JsonNode finalJsonNode = objectMapper.valueToTree(transformed);
+    setValueAtPointer(field.getTargetPointer(), finalJsonNode, targetNode);
+}
+
+
+
+// Array-aware custom transformer handler: expands '*' and invokes transformer per item
+private void handleArrayProjectionsWithCustom(JsonNode sourceNode,
+                                              FieldMapping field,
+                                              JsonNode targetNode,
+                                              MappingConfig config) {
+    // delegate to the same non-mutating worker you already have by threading pointers as locals
+    handleArrayProjectionsWithCustom(
+            sourceNode,
+            field,
+            field.getSourcePointer(),
+            field.getTargetPointer(),
+            field.getDependencies(),
+            targetNode,
+            config
+    );
+}
+
+// Worker that carries local pointers (no FieldMapping mutation)
+private void handleArrayProjectionsWithCustom(JsonNode sourceNode,
+                                              FieldMapping origField,
+                                              String curSourcePtr,
+                                              String curTargetPtr,
+                                              Map<String, String> curDeps,
+                                              JsonNode targetNode,
+                                              MappingConfig config) {
+    if (sourceNode == null || sourceNode.isNull()) return;
+
+    // validate wildcard depth
+    long sCount = curSourcePtr == null ? 0 : curSourcePtr.chars().filter(c -> c == '*').count();
+    long tCount = curTargetPtr == null ? 0 : curTargetPtr.chars().filter(c -> c == '*').count();
+    if (sCount != tCount) {
+        throw new TransformationException(
+                "Failed on field mapping: " + curSourcePtr + " -> " + curTargetPtr +
+                ", error: source and target must have same number of levels of dynamic arrays (*)");
+    }
+
+    boolean srcStartsWithArray = curSourcePtr.startsWith("/*");
+    boolean tgtStartsWithArray = curTargetPtr.startsWith("/*");
+    boolean srcIsDynamic       = curSourcePtr.contains("*");
+
+    if (!(srcStartsWithArray || sourceNode.isArray() || srcIsDynamic)) {
+        // Nothing to expand; fall back to simple path
+        handleCustomTransformation(sourceNode, targetNode, origField, config);
+        return;
+    }
+
+    String nextSourcePtr;
+    String nextTargetPtr = curTargetPtr;
+
+    if (tgtStartsWithArray) {
+        nextTargetPtr = curTargetPtr.substring(2); // drop leading "/*"
+    }
+
+    JsonNode sourceArrayNode;
+    if (sourceNode.isArray()) {
+        sourceArrayNode = sourceNode;
+        nextSourcePtr   = srcStartsWithArray ? curSourcePtr.substring(2) : curSourcePtr;
+    } else {
+        int srcAstIdx = curSourcePtr.indexOf("/*");
+        sourceArrayNode = sourceNode.at(curSourcePtr.substring(0, srcAstIdx));
+        nextSourcePtr   = curSourcePtr.substring(srcAstIdx + 2);
+    }
+
+    boolean nextSourceIsDynamic = nextSourcePtr.contains("*");
+
+    // We’ll need the transformer bean
+    CustomTransformer<?> bean =
+            applicationContext.getBean(origField.getCustomTransformer(), CustomTransformer.class);
+
+    for (int i = 0; i < sourceArrayNode.size(); i++) {
+        JsonNode indexedSourceNode = sourceArrayNode.get(i);
+        if (indexedSourceNode == null || indexedSourceNode.isMissingNode()) continue;
+
+        // non-mutating dependencies scoped to this index
+        Map<String, String> idxDeps = remapDependencies(curDeps, i);
+        if (!isDependencyValid(idxDeps, config)) continue;
+
+        // compute this level's target pointer
+        String idxTargetPtr = tgtStartsWithArray
+                ? nextTargetPtr
+                : ASTERIK_PATTERN.matcher(curTargetPtr).replaceFirst(String.valueOf(i));
+        boolean targetIsDynamic = idxTargetPtr.contains("*");
+
+        if (!nextSourceIsDynamic) {
+            // We are at the element level; call the custom transformer for THIS element
+            // Build a lightweight FieldMapping with a relative source pointer (no '*')
+            FieldMapping localField = new FieldMapping();
+            localField.setSourcePointer(nextSourcePtr);               // e.g. "/sourceAccountNumber"
+            localField.setTargetPointer(origField.getTargetPointer()); // type info may be used later
+            localField.setTargetDataType(origField.getTargetDataType());
+            localField.setOperationType(origField.getOperationType());
+            localField.setCustomData(origField.getCustomData());
+            localField.setCustomTransformer(origField.getCustomTransformer());
+            localField.setCustomMap(origField.getCustomMap());
+
+            Object transformed = bean.transform(indexedSourceNode, localField, config);
+            JsonNode finalValue = objectMapper.valueToTree(transformed);
+            if (finalValue == null || finalValue.isNull()) continue;
+
+            // optional conversion
+            if (org.apache.commons.lang3.StringUtils.isNotBlank(origField.getTargetDataType())) {
+                finalValue = convertDataType(finalValue,
+                        origField.getTargetDataType(),
+                        origField.getTargetPointer());
+            }
+
+            if (!targetIsDynamic) {
+                // set value at concrete pointer for this index
+                setValueAtPointer(idxTargetPtr, finalValue, targetNode);
+            } else {
+                // recurse deeper: resolve nested arrays on both sides
+                int srcAstIdx2 = nextSourcePtr.indexOf("/*");
+                String srcPtrToNestedArray = nextSourcePtr.substring(0, srcAstIdx2);
+                JsonNode nestedSourceArray = indexedSourceNode.at(srcPtrToNestedArray);
+                if (nestedSourceArray == null || nestedSourceArray.isEmpty()) continue;
+
+                String deeperSourcePtr = nextSourcePtr.substring(srcAstIdx2);
+                int tgtAstIdx = idxTargetPtr.indexOf("/*");
+                String tgtPtrToNestedArray = idxTargetPtr.substring(0, tgtAstIdx);
+                String deeperTargetPtr = idxTargetPtr.substring(tgtAstIdx);
+
+                JsonNode nestedTargetArray = targetNode.at(tgtPtrToNestedArray);
+                if (nestedTargetArray.isMissingNode() || nestedTargetArray.isNull()) {
+                    nestedTargetArray = objectMapper.createArrayNode();
+                }
+
+                handleArrayProjectionsWithCustom(
+                        nestedSourceArray, origField,
+                        deeperSourcePtr, deeperTargetPtr, idxDeps,
+                        nestedTargetArray, config
+                );
+
+                setValueAtPointer(tgtPtrToNestedArray, nestedTargetArray, targetNode);
+            }
+        } else {
+            // still dynamic on source — go deeper
+            int srcAstIdx2 = nextSourcePtr.indexOf("/*");
+            String srcPtrToNestedArray = nextSourcePtr.substring(0, srcAstIdx2);
+            JsonNode nestedSourceArray = indexedSourceNode.at(srcPtrToNestedArray);
+            if (nestedSourceArray == null || nestedSourceArray.isEmpty()) continue;
+
+            String deeperSourcePtr = nextSourcePtr.substring(srcAstIdx2);
+            int tgtAstIdx = idxTargetPtr.indexOf("/*");
+            String tgtPtrToNestedArray = idxTargetPtr.substring(0, tgtAstIdx);
+            String deeperTargetPtr = idxTargetPtr.substring(tgtAstIdx);
+
+            JsonNode nestedTargetArray = targetNode.at(tgtPtrToNestedArray);
+            if (nestedTargetArray.isMissingNode() || nestedTargetArray.isNull()) {
+                nestedTargetArray = objectMapper.createArrayNode();
+            }
+
+            handleArrayProjectionsWithCustom(
+                    nestedSourceArray, origField,
+                    deeperSourcePtr, deeperTargetPtr, idxDeps,
+                    nestedTargetArray, config
+            );
+
+            setValueAtPointer(tgtPtrToNestedArray, nestedTargetArray, targetNode);
+        }
+    }
+}
