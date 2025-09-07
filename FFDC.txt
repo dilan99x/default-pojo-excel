@@ -1,41 +1,109 @@
-# application.yml
-spring:
-  kafka:
-    consumer:
-      bootstrap-servers: ${KAFKA_BOOTSTRAP}
-      group-id: event-service-v1
-      enable-auto-commit: false
-      key-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
-      # Pull tuning
-      max-poll-records: 500          # start 200–1000; tune with latency
-      fetch-min-bytes: 65536         # coalesce small messages
-      fetch-max-wait-ms: 50          # wait a bit to batch
-      max-partition-fetch-bytes: 1048576  # align with typical message size
-      # Stability
-      session-timeout-ms: 15000
-      heartbeat-interval-ms: 5000
-      auto-offset-reset: latest
-      partition-assignment-strategy: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+private void handleArrayProjectionsWithCustom(JsonNode rootSource,
+                                              FieldMapping field,
+                                              JsonNode targetNode,
+                                              MappingConfig config) {
 
+    final String curSourcePtr = field.getSourcePointer();
+    final String curTargetPtr = field.getTargetPointer();
 
+    long sCount = curSourcePtr.chars().filter(c -> c == '*').count();
+    long tCount = curTargetPtr.chars().filter(c -> c == '*').count();
+    if (sCount != tCount) {
+        throw new TransformationException(
+            "Failed on field mapping: " + curSourcePtr + " -> " + curTargetPtr +
+            ", error: source and target must have same number of levels of dynamic arrays (*)");
+    }
 
+    boolean srcStartsWithArray = curSourcePtr.startsWith("/*");
+    boolean tgtStartsWithArray = curTargetPtr.startsWith("/*");
 
+    // Find the array to iterate
+    String nextSourcePtr;
+    JsonNode sourceArrayNode;
+    if (rootSource.isArray()) {
+        sourceArrayNode = rootSource;
+        nextSourcePtr = srcStartsWithArray ? curSourcePtr.substring(2) : curSourcePtr;
+    } else {
+        int srcAstIdx = curSourcePtr.indexOf("/*");
+        sourceArrayNode = rootSource.at(curSourcePtr.substring(0, srcAstIdx));
+        nextSourcePtr   = curSourcePtr.substring(srcAstIdx + 2);
+    }
 
-// KafkaConsumerConfig.java
-@Bean
-ConcurrentKafkaListenerContainerFactory<byte[], byte[]> byteConsumerFactory(
-        ConsumerFactory<byte[], byte[]> cf) {
-    var f = new ConcurrentKafkaListenerContainerFactory<byte[], byte[]>();
-    f.setConsumerFactory(cf);
-    f.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
-    f.getContainerProperties().setObservationEnabled(true); // Micrometer
-    f.setConcurrency(3);                 // start = min( #partitions, CPU cores ), then tune
-    f.setCommonErrorHandler(new DefaultErrorHandler(
-        // backoff between redeliveries (framework level); you’ll still DLQ in your code
-        new ExponentialBackOffWithMaxRetries(3) {{ setInitialInterval(200); setMultiplier(2.0); setMaxInterval(3000); }}
-    ));
-    // Optional: pause/resume on processor backpressure
-    f.setContainerCustomizer(container -> container.setPauseImmediate(true));
+    // Prepare the bean once
+    CustomTransformer<?> bean =
+        applicationContext.getBean(field.getCustomTransformer(), CustomTransformer.class);
+
+    for (int i = 0; i < sourceArrayNode.size(); i++) {
+        JsonNode row = sourceArrayNode.get(i);
+        if (row == null || row.isNull()) continue;
+
+        // Index-scoped target pointer
+        String idxTargetPtr = tgtStartsWithArray
+                ? curTargetPtr.substring(2)
+                : ASTERIK_PATTERN.matcher(curTargetPtr).replaceFirst(String.valueOf(i));
+
+        // If the remaining source still dives into deeper lists, recurse
+        int srcAstIdx2 = nextSourcePtr.indexOf("/*");
+        if (srcAstIdx2 >= 0) {
+            String toNestedArray   = nextSourcePtr.substring(0, srcAstIdx2);
+            JsonNode nestedSource  = row.at(toNestedArray);
+            if (nestedSource == null || nestedSource.isNull() || nestedSource.isMissingNode()) continue;
+
+            String deeperSourcePtr = nextSourcePtr.substring(srcAstIdx2 + 2);
+            int tgtAstIdx          = idxTargetPtr.indexOf("/*");
+            String tgtToNested     = idxTargetPtr.substring(0, tgtAstIdx);
+            String deeperTargetPtr = idxTargetPtr.substring(tgtAstIdx + 2);
+
+            JsonNode nestedTarget = targetNode.isArray()
+                    ? ((ArrayNode) targetNode).get(i).at(tgtToNested)
+                    : targetNode.at(tgtToNested);
+            if (nestedTarget == null || nestedTarget.isMissingNode() || nestedTarget.isNull()) {
+                nestedTarget = objectMapper.createArrayNode();
+            }
+
+            // Recurse per-item
+            FieldMapping perLevel = cloneForPointers(field, "/*" + deeperSourcePtr, "/*" + deeperTargetPtr);
+            handleArrayProjectionsWithCustom(nestedSource, perLevel, nestedTarget, config);
+
+            // write nested target back
+            if (targetNode.isArray()) {
+                ArrayNode arr = (ArrayNode) targetNode;
+                ensureArraySize(arr, i);
+                JsonNode obj = arr.get(i);
+                if (obj == null || obj.isNull() || obj.isMissingNode()) obj = objectMapper.createObjectNode();
+                setValueAtPointer(tgtToNested, nestedTarget, obj);
+                arr.set(i, obj);
+            } else {
+                setValueAtPointer(tgtToNested, nestedTarget, targetNode);
+            }
+            continue;
+        }
+
+        // Leaf-level: call the transformer for THIS row and THIS leaf path
+        FieldMapping perItem = cloneForPointers(field, nextSourcePtr, idxTargetPtr);
+        Object transformed   = bean.transform(row, perItem, config);
+        JsonNode asNode      = objectMapper.valueToTree(transformed);
+        setValueAtPointer(idxTargetPtr, asNode, targetNode);
+    }
+}
+
+And add this tiny helper to copy the FieldMapping with adjusted pointers without mutating the original:
+
+private FieldMapping cloneForPointers(FieldMapping src, String newSourcePtr, String newTargetPtr) {
+    FieldMapping f = new FieldMapping();
+    f.setSourcePointer(newSourcePtr);
+    f.setTargetPointer(newTargetPtr);
+    f.setTargetDataType(src.getTargetDataType());
+    f.setOperationType(src.getOperationType());
+    f.setCustomData(src.getCustomData());
+    f.setSourceDataType(src.getSourceDataType());
+    f.setCustomMap(src.getCustomMap());
+    f.setCustomTransformer(src.getCustomTransformer());
+    f.setDescription(src.getDescription());
+    // No dependencies copied here on purpose; array index scoping would require mapping expansion.
     return f;
 }
+
+
+
+
