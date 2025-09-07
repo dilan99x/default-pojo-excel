@@ -1,0 +1,119 @@
+{
+  "mappingId": "account_test_simple",
+  "name": "Account list request/response mapping with account conversion",
+  "apiType": "account-list",
+  "source": "Global API Fieldname",
+  "target": "Global API Fieldname",
+  "mappedFields": [
+    /* ---------------- data[*] (top-level accounts) ---------------- */
+    {
+      "source": "/data/*/sourceAccountNumber",
+      "sourceDataType": "string",
+      "target": "/data/*/accountNumber",
+      "targetDataType": "string",
+      "customTransformer": "accountNumberTransformer"
+    },
+    {
+      "source": "/data/*/productIndicatorCode",
+      "sourceDataType": "string",
+      "target": "/data/*/productCode",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/accountCurrency",
+      "sourceDataType": "string",
+      "target": "/data/*/accountCurrency",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/accountManagerId",
+      "sourceDataType": "string",
+      "target": "/data/*/accountManagerId",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/mobileMoneyIdentifier",
+      "sourceDataType": "string",
+      "target": "/data/*/mobileMoneyIdentifier",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/ifscCode",
+      "sourceDataType": "string",
+      "target": "/data/*/ifscCode",
+      "targetDataType": "string"
+    },
+
+    /* ---------------- data[*].childAccounts[*] (nested accounts) ---------------- */
+    {
+      "source": "/data/*/childAccounts/*/sourceAccountNumber",
+      "sourceDataType": "string",
+      "target": "/data/*/childAccounts/*/accountNumber",
+      "targetDataType": "string",
+      "customTransformer": "accountNumberTransformer"
+    },
+    {
+      "source": "/data/*/childAccounts/*/productIndicatorCode",
+      "sourceDataType": "string",
+      "target": "/data/*/childAccounts/*/productCode",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/childAccounts/*/accountCurrency",
+      "sourceDataType": "string",
+      "target": "/data/*/childAccounts/*/accountCurrency",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/data/*/childAccounts/*/accountManagerId",
+      "sourceDataType": "string",
+      "target": "/data/*/childAccounts/*/accountManagerId",
+      "targetDataType": "string"
+    },
+
+    /* ---------------- error[*] (echo error context) ---------------- */
+    {
+      "source": "/error/*/sourceAccountNumber",
+      "sourceDataType": "string",
+      "target": "/error/*/accountNumber",
+      "targetDataType": "string",
+      "customTransformer": "accountNumberTransformer"
+    },
+    {
+      "source": "/error/*/pnsProductCode",
+      "sourceDataType": "string",
+      "target": "/error/*/productCode",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/error/*/timestamp",
+      "sourceDataType": "string",
+      "target": "/error/*/timestamp",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/error/*/x-correlation-id",
+      "sourceDataType": "string",
+      "target": "/error/*/xCorrelationId",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/error/*/errorType",
+      "sourceDataType": "string",
+      "target": "/error/*/errorType",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/error/*/errorCode",
+      "sourceDataType": "string",
+      "target": "/error/*/errorCode",
+      "targetDataType": "string"
+    },
+    {
+      "source": "/error/*/errorDescription",
+      "sourceDataType": "string",
+      "target": "/error/*/errorDescription",
+      "targetDataType": "string"
+    }
+  ]
+}
