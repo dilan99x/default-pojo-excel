@@ -1,0 +1,130 @@
+// --- helper: decide when a token should be treated as an array index ---
+private static final int MAX_ARRAY_INDEX_HINT = 1_000_000; // sane upper bound for "indices"
+private boolean looksLikeArrayIndex(String token) {
+    if (token == null || token.isEmpty()) return false;
+    for (int i = 0; i < token.length(); i++) {
+        if (!Character.isDigit(token.charAt(i))) return false;
+    }
+    try {
+        long v = Long.parseLong(token);
+        return v >= 0 && v <= MAX_ARRAY_INDEX_HINT;
+    } catch (NumberFormatException e) {
+        return false;
+    }
+}
+
+
+
+@Override
+public void setValueAtPointer(String pointerExpr, JsonNode value, JsonNode targetObjRoot) {
+    if (pointerExpr == null || !pointerExpr.startsWith("/")) {
+        throw new IllegalArgumentException("Invalid JSON Pointer: " + pointerExpr);
+    }
+
+    String[] tokens = pointerExpr.substring(1).split("/");
+    JsonNode current = targetObjRoot;
+
+    // Walk all but the last token to create/descend containers
+    for (int i = 0; i < tokens.length - 1; i++) {
+        String token = com.dbs.cb.gapi.core.utils.AppUtils.decodePointerToken(tokens[i]);
+        String nextTokenRaw = tokens[i + 1];
+        String nextToken    = com.dbs.cb.gapi.core.utils.AppUtils.decodePointerToken(nextTokenRaw);
+
+        boolean wantArrayChild = looksLikeArrayIndex(nextToken);
+
+        if (current instanceof ObjectNode obj) {
+            JsonNode child = obj.get(token);
+
+            if (wantArrayChild) {
+                if (child == null || !child.isArray()) {
+                    child = objectMapper.createArrayNode();
+                    obj.set(token, child);
+                }
+            } else {
+                if (child == null || !child.isObject()) {
+                    child = objectMapper.createObjectNode();
+                    obj.set(token, child);
+                }
+            }
+            current = child;
+
+        } else if (current instanceof ArrayNode arr) {
+            // When we're inside an array, the *current* token must select an index.
+            if (!looksLikeArrayIndex(token)) {
+                // Defensive fallback: use index 0 and keep going as an object.
+                int idx = 0;
+                ensureArraySize(arr, idx);
+                JsonNode child = arr.get(idx);
+                if (child == null || !child.isObject()) {
+                    child = objectMapper.createObjectNode();
+                    arr.set(idx, child);
+                }
+                current = child;
+            } else {
+                int idx = Integer.parseInt(token);
+                ensureArraySize(arr, idx);
+                JsonNode child = arr.get(idx);
+                if (child == null || child.isNull() || child.isMissingNode()) {
+                    child = wantArrayChild ? objectMapper.createArrayNode() : objectMapper.createObjectNode();
+                    arr.set(idx, child);
+                }
+                current = child;
+            }
+        } else {
+            // If somehow we landed on a scalar, replace it with an object and continue.
+            ObjectNode replaced = objectMapper.createObjectNode();
+            // We don't have the parent reference here, but in normal flows 'current'
+            // should always be a container (Object/Array). This is just a guard.
+            current = replaced;
+        }
+    }
+
+    // Final write
+    String finalToken = com.dbs.cb.gapi.core.utils.AppUtils.decodePointerToken(tokens[tokens.length - 1]);
+
+    if (current instanceof ObjectNode obj) {
+        obj.set(finalToken, value);
+        return;
+    }
+
+    if (current instanceof ArrayNode arr) {
+        if (looksLikeArrayIndex(finalToken)) {
+            int idx = Integer.parseInt(finalToken);
+            ensureArraySize(arr, idx);
+            arr.set(idx, value);
+        } else {
+            // Final token is NOT a plausible index (e.g., a long account number).
+            // Treat it as a field on an object element. We’ll use index 0 by default.
+            int idx = 0;
+            ensureArraySize(arr, idx);
+            JsonNode child = arr.get(idx);
+            if (child == null || !child.isObject()) {
+                child = objectMapper.createObjectNode();
+                arr.set(idx, child);
+            }
+            ((ObjectNode) child).set(finalToken, value);
+        }
+        return;
+    }
+
+    // Fallback: if current is neither object nor array, turn root into object-like behavior.
+    // (Shouldn't happen in normal flows.)
+    if (targetObjRoot instanceof ObjectNode rootObj) {
+        rootObj.set(finalToken, value);
+    } else if (targetObjRoot instanceof ArrayNode rootArr && looksLikeArrayIndex(finalToken)) {
+        int idx = Integer.parseInt(finalToken);
+        ensureArraySize(rootArr, idx);
+        rootArr.set(idx, value);
+    } else if (targetObjRoot instanceof ArrayNode rootArr2) {
+        ensureArraySize(rootArr2, 0);
+        JsonNode child = rootArr2.get(0);
+        if (child == null || !child.isObject()) {
+            child = objectMapper.createObjectNode();
+            rootArr2.set(0, child);
+        }
+        ((ObjectNode) child).set(finalToken, value);
+    } else {
+        // As a last resort, do nothing or throw—choose your preferred behavior.
+        // throw new IllegalStateException("Cannot set value at: " + pointerExpr);
+    }
+}
