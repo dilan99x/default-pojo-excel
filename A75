@@ -1,30 +1,46 @@
-// Resolves the product code from the current JSON context (row or root).
-// If the mapping's pointer has "/*", we trim to the segment AFTER the last wildcard
-// so it can be resolved relative to the current row object.
-private String extractProductCodeForContext(JsonNode contextNode, FieldMapping productField) {
-    if (productField == null || contextNode == null) return null;
+// 1a) Try to resolve using the mapping’s pointer, but relative to the current context row.
+//     Falls back to the absolute pointer if needed.
+private String extractByPointerRelative(JsonNode contextNode, String pointer) {
+    if (contextNode == null || StringUtils.isBlank(pointer)) return null;
 
-    String sp = productField.getSourcePointer();
-    if (sp == null || sp.isEmpty()) return null;
-
-    // If the pointer contains a wildcard, we assume we're executing in the context
-    // of a single array element (row). Use the suffix after the LAST "/*".
-    if (sp.contains("/*")) {
-        int last = sp.lastIndexOf("/*");
-        String relative = sp.substring(last + 2); // e.g. "/pnsProductCode"
-        JsonNode n = contextNode.at(relative);
-        if (!n.isMissingNode() && !n.isNull()) {
+    // If the pointer has wildcards, use only the suffix *after the last "/*"
+    if (pointer.contains("/*")) {
+        int last = pointer.lastIndexOf("/*");
+        String suffix = pointer.substring(last + 2); // e.g. "/pnsProductCode"
+        JsonNode n = contextNode.at(suffix);
+        if (n != null && !n.isMissingNode() && !n.isNull()) {
             return n.asText();
         }
-
-        // Fallback: try absolute pointer in case this transformer is invoked at the root
-        n = contextNode.at(sp);
-        return (n.isMissingNode() || n.isNull()) ? null : n.asText();
+        // fallback: try the absolute pointer (works when transformer runs at root)
+        n = contextNode.at(pointer);
+        return (n == null || n.isMissingNode() || n.isNull()) ? null : n.asText();
     }
 
-    // No wildcard — normal extraction works
-    return com.dbs.cb.gapi.core.utils.JsonUtils.extractText(contextNode, productField);
+    // No wildcards — just use the pointer as-is
+    JsonNode n = contextNode.at(pointer);
+    return (n == null || n.isMissingNode() || n.isNull()) ? null : n.asText();
 }
 
+// 1b) Robust DFS lookup by key name anywhere under the current context (works for arrays, nested objects).
+private String findFirstTextByKey(JsonNode node, String key) {
+    if (node == null || node.isNull() || StringUtils.isBlank(key)) return null;
 
-
+    if (node.isObject()) {
+        JsonNode direct = node.get(key);
+        if (direct != null && !direct.isNull() && !direct.isMissingNode()) {
+            return direct.asText();
+        }
+        var fields = node.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> e = fields.next();
+            String found = findFirstTextByKey(e.getValue(), key);
+            if (found != null) return found;
+        }
+    } else if (node.isArray()) {
+        for (JsonNode child : node) {
+            String found = findFirstTextByKey(child, key);
+            if (found != null) return found;
+        }
+    }
+    return null;
+}
