@@ -1,46 +1,72 @@
-// 1a) Try to resolve using the mapping’s pointer, but relative to the current context row.
-//     Falls back to the absolute pointer if needed.
-private String extractByPointerRelative(JsonNode contextNode, String pointer) {
-    if (contextNode == null || StringUtils.isBlank(pointer)) return null;
+private FieldMapping extractPnsProductCode(MappingConfig config) {
+    final String target = acctNumberTransformationConfig.getProductCode();
 
-    // If the pointer has wildcards, use only the suffix *after the last "/*"
-    if (pointer.contains("/*")) {
-        int last = pointer.lastIndexOf("/*");
-        String suffix = pointer.substring(last + 2); // e.g. "/pnsProductCode"
-        JsonNode n = contextNode.at(suffix);
-        if (n != null && !n.isMissingNode() && !n.isNull()) {
-            return n.asText();
+    for (FieldMapping field : config.getMappedFields()) {
+        // 1) Keep your current fast-path for plain object pointers
+        try {
+            if (field.getCompiledSourcePointer() != null) {
+                String property = field.getCompiledSourcePointer().getMatchingProperty();
+                if (target.equals(property)) {
+                    return field;
+                }
+            }
+        } catch (Exception ignore) {
+            // Some compiled pointers (array/wildcard) may not support getMatchingProperty()
+            // Fall back to parsing the pointer string.
         }
-        // fallback: try the absolute pointer (works when transformer runs at root)
-        n = contextNode.at(pointer);
-        return (n == null || n.isMissingNode() || n.isNull()) ? null : n.asText();
-    }
 
-    // No wildcards — just use the pointer as-is
-    JsonNode n = contextNode.at(pointer);
-    return (n == null || n.isMissingNode() || n.isNull()) ? null : n.asText();
+        // 2) Fallback: inspect the pointer string and compare the *last meaningful token*
+        String pointer = resolvePointerString(field);
+        if (pointer == null) continue;
+
+        String last = lastMeaningfulToken(pointer);
+        if (target.equals(last)) {
+            return field;
+        }
+    }
+    return null;
 }
 
-// 1b) Robust DFS lookup by key name anywhere under the current context (works for arrays, nested objects).
-private String findFirstTextByKey(JsonNode node, String key) {
-    if (node == null || node.isNull() || StringUtils.isBlank(key)) return null;
+/** Get a usable pointer string from FieldMapping, regardless of how it’s stored. */
+private String resolvePointerString(FieldMapping field) {
+    try {
+        if (field.getSourcePointer() != null) {
+            return field.getSourcePointer(); // e.g. "/transactionDetails/partTransactionDetails/0/pnsProductCode"
+        }
+    } catch (Exception ignore) { }
 
-    if (node.isObject()) {
-        JsonNode direct = node.get(key);
-        if (direct != null && !direct.isNull() && !direct.isMissingNode()) {
-            return direct.asText();
+    try {
+        if (field.getCompiledSourcePointer() != null) {
+            return field.getCompiledSourcePointer().toString(); // most impls return JSON-pointer-like string
         }
-        var fields = node.fields();
-        while (fields.hasNext()) {
-            Map.Entry<String, JsonNode> e = fields.next();
-            String found = findFirstTextByKey(e.getValue(), key);
-            if (found != null) return found;
+    } catch (Exception ignore) { }
+
+    return null;
+}
+
+/**
+ * Returns the last non-index, non-wildcard token of a JSON-pointer-like path.
+ * Examples:
+ *  "/a/b/c" -> "c"
+ *  "/a/b/0/pnsProductCode" -> "pnsProductCode"
+ *  "/a/*/pnsProductCode"   -> "pnsProductCode"
+ *  "a/b/c"                 -> "c"
+ *  "/a/b/0"                -> "b" (steps back from trailing array index)
+ */
+private String lastMeaningfulToken(String pointer) {
+    if (pointer == null || pointer.isEmpty()) return null;
+
+    String[] parts = pointer.split("/"); // works for both "/a/b" and "a/b"
+    // Walk from end to start until we hit a non-index, non-wildcard segment
+    for (int i = parts.length - 1; i >= 0; i--) {
+        String tok = parts[i];
+        if (tok == null || tok.isEmpty()) continue; // skip empty (leading slash)
+        if (tok.matches("\\d+") || "*".equals(tok) || "-".equals(tok)) {
+            // numeric array index or wildcard — skip upward
+            continue;
         }
-    } else if (node.isArray()) {
-        for (JsonNode child : node) {
-            String found = findFirstTextByKey(child, key);
-            if (found != null) return found;
-        }
+        // Unescape JSON Pointer tokens (~1 -> '/', ~0 -> '~')
+        return tok.replace("~1", "/").replace("~0", "~");
     }
     return null;
 }
