@@ -1,119 +1,80 @@
-private void handleArrayProjectionsWithCustom(JsonNode rootSource,
-                                              FieldMapping field,
-                                              JsonNode targetNode,
-                                              MappingConfig config) {
+private FieldMapping extractPnsProductCode(MappingConfig config) {
+    final String target = acctNumberTransformationConfig.getProductCode();
 
-    final String curSourcePtr = field.getSourcePointer();
-    final String curTargetPtr = field.getTargetPointer();
-
-    long sCount = curSourcePtr.chars().filter(c -> c == '*').count();
-    long tCount = curTargetPtr.chars().filter(c -> c == '*').count();
-    if (sCount != tCount) {
-        throw new TransformationException(
-            "Failed on field mapping: " + curSourcePtr + " -> " + curTargetPtr +
-            ", error: source and target must have same number of levels of dynamic arrays (*)");
-    }
-
-    boolean srcStartsWithArray = curSourcePtr.startsWith("/*");
-    boolean tgtStartsWithArray = curTargetPtr.startsWith("/*");
-
-    // Find the array to iterate
-    String nextSourcePtr;
-    JsonNode sourceArrayNode;
-    if (rootSource.isArray()) {
-        sourceArrayNode = rootSource;
-        nextSourcePtr = srcStartsWithArray ? curSourcePtr.substring(2) : curSourcePtr;
-    } else {
-        int srcAstIdx = curSourcePtr.indexOf("/*");
-        sourceArrayNode = rootSource.at(curSourcePtr.substring(0, srcAstIdx));
-        nextSourcePtr   = curSourcePtr.substring(srcAstIdx + 2);
-    }
-
-    // Prepare the bean once
-    CustomTransformer<?> bean =
-        applicationContext.getBean(field.getCustomTransformer(), CustomTransformer.class);
-
-    for (int i = 0; i < sourceArrayNode.size(); i++) {
-        JsonNode row = sourceArrayNode.get(i);
-        if (row == null || row.isNull()) continue;
-
-        // Index-scoped target pointer
-        String idxTargetPtr = tgtStartsWithArray
-                ? curTargetPtr.substring(2)
-                : ASTERIK_PATTERN.matcher(curTargetPtr).replaceFirst(String.valueOf(i));
-
-        // If the remaining source still dives into deeper lists, recurse
-        int srcAstIdx2 = nextSourcePtr.indexOf("/*");
-        if (srcAstIdx2 >= 0) {
-            String toNestedArray   = nextSourcePtr.substring(0, srcAstIdx2);
-            JsonNode nestedSource  = row.at(toNestedArray);
-            if (nestedSource == null || nestedSource.isNull() || nestedSource.isMissingNode()) continue;
-
-            String deeperSourcePtr = nextSourcePtr.substring(srcAstIdx2 + 2);
-            int tgtAstIdx          = idxTargetPtr.indexOf("/*");
-            String tgtToNested     = idxTargetPtr.substring(0, tgtAstIdx);
-            String deeperTargetPtr = idxTargetPtr.substring(tgtAstIdx + 2);
-
-            JsonNode nestedTarget = targetNode.isArray()
-                    ? ((ArrayNode) targetNode).get(i).at(tgtToNested)
-                    : targetNode.at(tgtToNested);
-            if (nestedTarget == null || nestedTarget.isMissingNode() || nestedTarget.isNull()) {
-                nestedTarget = objectMapper.createArrayNode();
+    for (FieldMapping field : config.getMappedFields()) {
+        // 1) Fast path: works for plain object pointers
+        try {
+            if (field.getCompiledSourcePointer() != null) {
+                String property = field.getCompiledSourcePointer().getMatchingProperty();
+                if (target.equals(property)) {
+                    return field;
+                }
             }
-
-            // Recurse per-item
-            FieldMapping perLevel = cloneForPointers(field, "/*" + deeperSourcePtr, "/*" + deeperTargetPtr);
-            handleArrayProjectionsWithCustom(nestedSource, perLevel, nestedTarget, config);
-
-            // write nested target back
-            if (targetNode.isArray()) {
-                ArrayNode arr = (ArrayNode) targetNode;
-                ensureArraySize(arr, i);
-                JsonNode obj = arr.get(i);
-                if (obj == null || obj.isNull() || obj.isMissingNode()) obj = objectMapper.createObjectNode();
-                setValueAtPointer(tgtToNested, nestedTarget, obj);
-                arr.set(i, obj);
-            } else {
-                setValueAtPointer(tgtToNested, nestedTarget, targetNode);
-            }
-            continue;
+        } catch (Exception ignore) {
+            // Some compiled pointers (array paths, wildcards) may not support getMatchingProperty()
+            // Fall back to parsing the pointer string.
         }
 
-        // Leaf-level: call the transformer for THIS row and THIS leaf path
-        FieldMapping perItem = cloneForPointers(field, nextSourcePtr, idxTargetPtr);
-        Object transformed   = bean.transform(row, perItem, config);
-        JsonNode asNode      = objectMapper.valueToTree(transformed);
-        setValueAtPointer(idxTargetPtr, asNode, targetNode);
+        // 2) Fallback: inspect the pointer string and compare the last token to the target
+        String pointer = resolvePointerString(field);
+        if (pointer == null) continue;
+
+        String lastToken = lastToken(pointer);
+        if (target.equals(lastToken)) {
+            return field;
+        }
     }
+    return null;
 }
 
-And add this tiny helper to copy the FieldMapping with adjusted pointers without mutating the original:
+private String resolvePointerString(FieldMapping field) {
+    // Prefer a raw source pointer if your FieldMapping exposes it
+    try {
+        if (field.getSourcePointer() != null) {
+            return field.getSourcePointer();
+        }
+    } catch (Exception ignore) { }
 
-private FieldMapping cloneForPointers(FieldMapping src, String newSourcePtr, String newTargetPtr) {
-    FieldMapping f = new FieldMapping();
-    f.setSourcePointer(newSourcePtr);
-    f.setTargetPointer(newTargetPtr);
-    f.setTargetDataType(src.getTargetDataType());
-    f.setOperationType(src.getOperationType());
-    f.setCustomData(src.getCustomData());
-    f.setSourceDataType(src.getSourceDataType());
-    f.setCustomMap(src.getCustomMap());
-    f.setCustomTransformer(src.getCustomTransformer());
-    f.setDescription(src.getDescription());
-    // No dependencies copied here on purpose; array index scoping would require mapping expansion.
-    return f;
+    // Otherwise use compiled pointer's toString(), which is typically a JSON-pointer-like path
+    try {
+        if (field.getCompiledSourcePointer() != null) {
+            return field.getCompiledSourcePointer().toString();
+        }
+    } catch (Exception ignore) { }
+
+    return null;
 }
 
+/**
+ * Extract the last meaningful token from a JSON-pointer-like string.
+ * Examples:
+ *  "/a/b/c" -> "c"
+ *  "/a/b/0/pnsProductCode" -> "pnsProductCode"
+ *  "/a/*/pnsProductCode"   -> "pnsProductCode"
+ *  "a/b/c"                 -> "c"
+ */
+private String lastToken(String pointer) {
+    if (pointer == null || pointer.isEmpty()) return null;
 
-
-if (StringUtils.isNotBlank(field.getCustomTransformer())) {
-    // If this field points into a list, run the per-item projection path.
-    if (field.getSourcePointer() != null && field.getSourcePointer().contains("/*")) {
-        handleArrayProjectionsWithCustom(sourceNode, field, targetNode, config);
-    } else {
-        handleCustomTransformation(sourceNode, targetNode, field, config);
+    String[] parts = pointer.split("/");
+    String last = null;
+    for (String p : parts) {
+        if (p == null || p.isEmpty()) continue;
+        last = p;
     }
-    continue;
+    if (last == null) return null;
+
+    // If it somehow ends with an array index (rare for field paths), step back one
+    if (last.matches("\\d+")) {
+        // Find the previous non-empty token
+        String prev = null;
+        for (int i = parts.length - 2; i >= 0; i--) {
+            String p = parts[i];
+            if (p != null && !p.isEmpty()) { prev = p; break; }
+        }
+        last = (prev != null && !prev.matches("\\d+")) ? prev : last;
+    }
+
+    // Unescape JSON Pointer tokens
+    return last.replace("~1", "/").replace("~0", "~");
 }
-
-
