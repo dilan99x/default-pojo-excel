@@ -3,19 +3,16 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.MissingNode;
 
 private static JsonNode resolve(JsonNode root, String path, JsonPointer pointer) {
-    if (root == null || path == null || path.isEmpty()) {
-        return MissingNode.getInstance();
-    }
+    if (root == null || path == null || path.isEmpty()) return MissingNode.getInstance();
 
-    // FAST PATH: only when there's NO wildcard. This preserves existing behavior.
+    // Fast path: delegate to Jackson ONLY if there is NO wildcard
     if (path.startsWith("/") && pointer != null && !path.contains("*")) {
         return root.at(pointer);
     }
 
-    // Manual traversal (supports arrays, [idx], and '*' wildcard)
+    // Manual traversal (supports '/', numeric indices, [idx], and '*' wildcard)
     String p = path.startsWith("/") ? path.substring(1) : path;
     String[] tokens = p.isEmpty() ? new String[0] : p.split("/");
-
     return resolveFrom(root, tokens, 0);
 }
 
@@ -24,11 +21,9 @@ private static JsonNode resolveFrom(JsonNode node, String[] tokens, int pos) {
     if (pos >= tokens.length) return node;
 
     String raw = tokens[pos];
-    if (raw == null || raw.isEmpty()) {
-        return resolveFrom(node, tokens, pos + 1);
-    }
+    if (raw == null || raw.isEmpty()) return resolveFrom(node, tokens, pos + 1);
 
-    // Wildcard: try FIRST successful match among array elements or object fields
+    // '*' wildcard: return FIRST successful match across array elements or object fields
     if ("*".equals(raw)) {
         if (node.isArray()) {
             for (JsonNode el : node) {
@@ -49,16 +44,15 @@ private static JsonNode resolveFrom(JsonNode node, String[] tokens, int pos) {
         return MissingNode.getInstance();
     }
 
-    // If current node is an array and token is a plain numeric index: "/.../0/..."
+    // If current node is an array and token is a numeric index like "0"
     if (node.isArray() && isInteger(raw)) {
         int idx = Integer.parseInt(raw);
         if (idx < 0 || idx >= node.size()) return MissingNode.getInstance();
         return resolveFrom(node.get(idx), tokens, pos + 1);
     }
 
-    // Otherwise treat token as a field name, possibly with bracket indices like "items[0][1]"
+    // Otherwise treat token as a field name (may include bracket indices: base[0][1]…)
     String token = unescapePointerToken(raw);
-
     int firstBracket = token.indexOf('[');
     String base = firstBracket >= 0 ? token.substring(0, firstBracket) : token;
 
@@ -68,7 +62,7 @@ private static JsonNode resolveFrom(JsonNode node, String[] tokens, int pos) {
         if (cur.isMissingNode() || cur.isNull()) return MissingNode.getInstance();
     }
 
-    // Apply bracket indices: [0][1]...
+    // Apply bracket indices sequentially
     int i = firstBracket;
     while (i >= 0 && !cur.isMissingNode() && !cur.isNull()) {
         int close = token.indexOf(']', i);
@@ -91,14 +85,8 @@ private static boolean isInteger(String s) {
     if (s == null || s.isEmpty()) return false;
     int i = 0, n = s.length();
     char c0 = s.charAt(0);
-    if (c0 == '-' || c0 == '+') {
-        if (n == 1) return false;
-        i = 1;
-    }
-    for (; i < n; i++) {
-        char c = s.charAt(i);
-        if (c < '0' || c > '9') return false;
-    }
+    if (c0 == '-' || c0 == '+') { if (n == 1) return false; i = 1; }
+    for (; i < n; i++) { char c = s.charAt(i); if (c < '0' || c > '9') return false; }
     return true;
 }
 
@@ -110,7 +98,11 @@ private static String unescapePointerToken(String tok) {
 
 
 public static String extractText(JsonNode root, FieldMapping fieldMapping) {
-    JsonNode n = resolve(root, fieldMapping.getSourcePointer(),
-                         fieldMapping.getCompiledSourcePointer());
+    String path = fieldMapping.getSourcePointer();
+    JsonPointer pointer = fieldMapping.getCompiledSourcePointer();
+
+    // Use our custom resolver — it skips root.at() if '*' is present
+    JsonNode n = resolve(root, path, pointer);
+
     return (n.isMissingNode() || n.isNull()) ? null : n.asText();
 }
