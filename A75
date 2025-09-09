@@ -1,188 +1,30 @@
-// --- JsonUtils.java ---
+// Resolves the product code from the current JSON context (row or root).
+// If the mapping's pointer has "/*", we trim to the segment AFTER the last wildcard
+// so it can be resolved relative to the current row object.
+private String extractProductCodeForContext(JsonNode contextNode, FieldMapping productField) {
+    if (productField == null || contextNode == null) return null;
 
-import com.fasterxml.jackson.core.JsonPointer;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.MissingNode;
+    String sp = productField.getSourcePointer();
+    if (sp == null || sp.isEmpty()) return null;
 
-private static final boolean DEBUG_JSON_RESOLVE = true; // flip to false to silence
+    // If the pointer contains a wildcard, we assume we're executing in the context
+    // of a single array element (row). Use the suffix after the LAST "/*".
+    if (sp.contains("/*")) {
+        int last = sp.lastIndexOf("/*");
+        String relative = sp.substring(last + 2); // e.g. "/pnsProductCode"
+        JsonNode n = contextNode.at(relative);
+        if (!n.isMissingNode() && !n.isNull()) {
+            return n.asText();
+        }
 
-public static String extractText(JsonNode root, FieldMapping fieldMapping) {
-    String path = fieldMapping.getSourcePointer();
-    JsonPointer pointer = fieldMapping.getCompiledSourcePointer();
-
-    JsonNode n = resolve(root, path, pointer);  // array/wildcard aware
-    if (DEBUG_JSON_RESOLVE) {
-        System.out.println("[extractText] path=" + path +
-                " nodeType=" + (n == null ? "null" : n.getNodeType()) +
-                " value=" + (n == null ? "null" : (n.isValueNode() ? n.asText() : n.toString())));
-    }
-    return (n == null || n.isMissingNode() || n.isNull())
-            ? null
-            : (n.isValueNode() ? n.asText() : n.toString());
-}
-
-private static JsonNode resolve(JsonNode root, String path, JsonPointer pointer) {
-    if (root == null || path == null || path.isEmpty()) return MissingNode.getInstance();
-
-    // FAST PATH only if there's NO wildcard
-    if (path.startsWith("/") && pointer != null && !path.contains("*")) {
-        return root.at(pointer);
+        // Fallback: try absolute pointer in case this transformer is invoked at the root
+        n = contextNode.at(sp);
+        return (n.isMissingNode() || n.isNull()) ? null : n.asText();
     }
 
-    // Manual traversal for wildcards/brackets/numeric tokens
-    String p = path.startsWith("/") ? path.substring(1) : path;
-    String[] tokens = p.isEmpty() ? new String[0] : p.split("/");
-
-    JsonNode cur = root;
-    for (int pos = 0; pos < tokens.length; pos++) {
-        if (cur == null || cur.isMissingNode() || cur.isNull()) {
-            if (DEBUG_JSON_RESOLVE) System.out.println(step(path, pos, "Missing/null before token"));
-            return MissingNode.getInstance();
-        }
-
-        String raw = tokens[pos];
-        if (raw == null || raw.isEmpty()) continue; // skip empty
-
-        // Wildcard -> try FIRST success in array/object
-        if ("*".equals(raw)) {
-            JsonNode found = MissingNode.getInstance();
-            if (cur.isArray()) {
-                for (int i = 0; i < cur.size(); i++) {
-                    JsonNode cand = resolveFrom(cur.get(i), tokens, pos + 1, path);
-                    if (!cand.isMissingNode() && !cand.isNull()) { found = cand; break; }
-                }
-            } else if (cur.isObject()) {
-                var it = cur.elements();
-                while (it.hasNext()) {
-                    JsonNode cand = resolveFrom(it.next(), tokens, pos + 1, path);
-                    if (!cand.isMissingNode() && !cand.isNull()) { found = cand; break; }
-                }
-            } else {
-                if (DEBUG_JSON_RESOLVE) System.out.println(step(path, pos, "Wildcard on non-container: " + cur.getNodeType()));
-            }
-            return found;
-        }
-
-        // Numeric token while on array: "/.../0/..."
-        if (cur.isArray() && isInteger(raw)) {
-            int idx = Integer.parseInt(raw);
-            if (idx < 0 || idx >= cur.size()) {
-                if (DEBUG_JSON_RESOLVE) System.out.println(step(path, pos, "Index OOB: " + idx + " size=" + cur.size()));
-                return MissingNode.getInstance();
-            }
-            cur = cur.get(idx);
-            if (DEBUG_JSON_RESOLVE) System.out.println(step(path, pos, "ARRAY[" + idx + "] -> " + cur.getNodeType()));
-            continue;
-        }
-
-        // Field name (may include bracket indices like items[0][1])
-        String token = unescapePointerToken(raw);
-        int firstBracket = token.indexOf('[');
-        String base = firstBracket >= 0 ? token.substring(0, firstBracket) : token;
-
-        if (!base.isEmpty()) {
-            cur = cur.path(base);
-            if (DEBUG_JSON_RESOLVE) System.out.println(step(path, pos, "FIELD '" + base + "' -> " + cur.getNodeType()));
-            if (cur.isMissingNode() || cur.isNull()) return MissingNode.getInstance();
-        }
-
-        // Apply bracket indices
-        int i = firstBracket;
-        while (i >= 0 && !cur.isMissingNode() && !cur.isNull()) {
-            int close = token.indexOf(']', i);
-            if (close < 0) {
-                if (DEBUG_JSON_RESOLVE) System.out.println(step(path, pos, "Malformed bracket token: " + token));
-                return MissingNode.getInstance();
-            }
-            String idxStr = token.substring(i + 1, close).trim();
-            if (!isInteger(idxStr)) {
-                if (DEBUG_JSON_RESOLVE) System.out.println(step(path, pos, "Non-integer bracket: " + idxStr));
-                return MissingNode.getInstance();
-            }
-            int idx = Integer.parseInt(idxStr);
-            if (!cur.isArray() || idx < 0 || idx >= cur.size()) {
-                if (DEBUG_JSON_RESOLVE) System.out.println(step(path, pos, "Bracket index OOB or not array: " + idx));
-                return MissingNode.getInstance();
-            }
-            cur = cur.get(idx);
-            if (DEBUG_JSON_RESOLVE) System.out.println(step(path, pos, "BRACKET[" + idx + "] -> " + cur.getNodeType()));
-            i = token.indexOf('[', close + 1);
-        }
-    }
-
-    return cur == null ? MissingNode.getInstance() : cur;
+    // No wildcard — normal extraction works
+    return com.dbs.cb.gapi.core.utils.JsonUtils.extractText(contextNode, productField);
 }
 
-// helper used by wildcard path branch
-private static JsonNode resolveFrom(JsonNode node, String[] tokens, int pos, String fullPath) {
-    JsonNode cur = node;
-    for (int i = pos; i < tokens.length; i++) {
-        if (cur == null || cur.isMissingNode() || cur.isNull()) return MissingNode.getInstance();
-        String raw = tokens[i];
-        if (raw == null || raw.isEmpty()) continue;
 
-        if ("*".equals(raw)) {
-            if (cur.isArray()) {
-                for (JsonNode el : cur) {
-                    JsonNode cand = resolveFrom(el, tokens, i + 1, fullPath);
-                    if (!cand.isMissingNode() && !cand.isNull()) return cand;
-                }
-                return MissingNode.getInstance();
-            } else if (cur.isObject()) {
-                var it = cur.elements();
-                while (it.hasNext()) {
-                    JsonNode cand = resolveFrom(it.next(), tokens, i + 1, fullPath);
-                    if (!cand.isMissingNode() && !cand.isNull()) return cand;
-                }
-                return MissingNode.getInstance();
-            }
-            return MissingNode.getInstance();
-        }
 
-        if (cur.isArray() && isInteger(raw)) {
-            int idx = Integer.parseInt(raw);
-            if (idx < 0 || idx >= cur.size()) return MissingNode.getInstance();
-            cur = cur.get(idx);
-            continue;
-        }
-
-        String token = unescapePointerToken(raw);
-        int firstBracket = token.indexOf('[');
-        String base = firstBracket >= 0 ? token.substring(0, firstBracket) : token;
-
-        if (!base.isEmpty()) {
-            cur = cur.path(base);
-            if (cur.isMissingNode() || cur.isNull()) return MissingNode.getInstance();
-        }
-
-        int b = firstBracket;
-        while (b >= 0 && !cur.isMissingNode() && !cur.isNull()) {
-            int close = token.indexOf(']', b);
-            if (close < 0) return MissingNode.getInstance();
-            String idxStr = token.substring(b + 1, close).trim();
-            if (!isInteger(idxStr)) return MissingNode.getInstance();
-            int idx = Integer.parseInt(idxStr);
-            if (!cur.isArray() || idx < 0 || idx >= cur.size()) return MissingNode.getInstance();
-            cur = cur.get(idx);
-            b = token.indexOf('[', close + 1);
-        }
-    }
-    return cur == null ? MissingNode.getInstance() : cur;
-}
-
-private static boolean isInteger(String s) {
-    if (s == null || s.isEmpty()) return false;
-    int i = 0, n = s.length();
-    char c0 = s.charAt(0);
-    if (c0 == '-' || c0 == '+') { if (n == 1) return false; i = 1; }
-    for (; i < n; i++) { char c = s.charAt(i); if (c < '0' || c > '9') return false; }
-    return true;
-}
-
-private static String unescapePointerToken(String tok) {
-    return tok.replace("~1", "/").replace("~0", "~");
-}
-
-private static String step(String fullPath, int pos, String msg) {
-    return "[resolve] path=" + fullPath + " step#" + pos + " -> " + msg;
-}
