@@ -2,7 +2,7 @@ private FieldMapping extractPnsProductCode(MappingConfig config) {
     final String target = acctNumberTransformationConfig.getProductCode();
 
     for (FieldMapping field : config.getMappedFields()) {
-        // 1) Fast path: works for plain object pointers
+        // 1) Keep your current fast-path for plain object pointers
         try {
             if (field.getCompiledSourcePointer() != null) {
                 String property = field.getCompiledSourcePointer().getMatchingProperty();
@@ -11,34 +11,33 @@ private FieldMapping extractPnsProductCode(MappingConfig config) {
                 }
             }
         } catch (Exception ignore) {
-            // Some compiled pointers (array paths, wildcards) may not support getMatchingProperty()
+            // Some compiled pointers (array/wildcard) may not support getMatchingProperty()
             // Fall back to parsing the pointer string.
         }
 
-        // 2) Fallback: inspect the pointer string and compare the last token to the target
+        // 2) Fallback: inspect the pointer string and compare the *last meaningful token*
         String pointer = resolvePointerString(field);
         if (pointer == null) continue;
 
-        String lastToken = lastToken(pointer);
-        if (target.equals(lastToken)) {
+        String last = lastMeaningfulToken(pointer);
+        if (target.equals(last)) {
             return field;
         }
     }
     return null;
 }
 
+/** Get a usable pointer string from FieldMapping, regardless of how it’s stored. */
 private String resolvePointerString(FieldMapping field) {
-    // Prefer a raw source pointer if your FieldMapping exposes it
     try {
         if (field.getSourcePointer() != null) {
-            return field.getSourcePointer();
+            return field.getSourcePointer(); // e.g. "/transactionDetails/partTransactionDetails/0/pnsProductCode"
         }
     } catch (Exception ignore) { }
 
-    // Otherwise use compiled pointer's toString(), which is typically a JSON-pointer-like path
     try {
         if (field.getCompiledSourcePointer() != null) {
-            return field.getCompiledSourcePointer().toString();
+            return field.getCompiledSourcePointer().toString(); // most impls return JSON-pointer-like string
         }
     } catch (Exception ignore) { }
 
@@ -46,35 +45,28 @@ private String resolvePointerString(FieldMapping field) {
 }
 
 /**
- * Extract the last meaningful token from a JSON-pointer-like string.
+ * Returns the last non-index, non-wildcard token of a JSON-pointer-like path.
  * Examples:
  *  "/a/b/c" -> "c"
  *  "/a/b/0/pnsProductCode" -> "pnsProductCode"
  *  "/a/*/pnsProductCode"   -> "pnsProductCode"
  *  "a/b/c"                 -> "c"
+ *  "/a/b/0"                -> "b" (steps back from trailing array index)
  */
-private String lastToken(String pointer) {
+private String lastMeaningfulToken(String pointer) {
     if (pointer == null || pointer.isEmpty()) return null;
 
-    String[] parts = pointer.split("/");
-    String last = null;
-    for (String p : parts) {
-        if (p == null || p.isEmpty()) continue;
-        last = p;
-    }
-    if (last == null) return null;
-
-    // If it somehow ends with an array index (rare for field paths), step back one
-    if (last.matches("\\d+")) {
-        // Find the previous non-empty token
-        String prev = null;
-        for (int i = parts.length - 2; i >= 0; i--) {
-            String p = parts[i];
-            if (p != null && !p.isEmpty()) { prev = p; break; }
+    String[] parts = pointer.split("/"); // works for both "/a/b" and "a/b"
+    // Walk from end to start until we hit a non-index, non-wildcard segment
+    for (int i = parts.length - 1; i >= 0; i--) {
+        String tok = parts[i];
+        if (tok == null || tok.isEmpty()) continue; // skip empty (leading slash)
+        if (tok.matches("\\d+") || "*".equals(tok) || "-".equals(tok)) {
+            // numeric array index or wildcard — skip upward
+            continue;
         }
-        last = (prev != null && !prev.matches("\\d+")) ? prev : last;
+        // Unescape JSON Pointer tokens (~1 -> '/', ~0 -> '~')
+        return tok.replace("~1", "/").replace("~0", "~");
     }
-
-    // Unescape JSON Pointer tokens
-    return last.replace("~1", "/").replace("~0", "~");
+    return null;
 }
