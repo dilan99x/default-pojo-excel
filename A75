@@ -1,89 +1,29 @@
-private FieldMapping extractPnsProductCode(MappingConfig config) {
-    final String target = acctNumberTransformationConfig.getProductCode();
+private List<String> validateRoutingHeaders(HttpServletRequest request) {
+    List<String> missingCustomHeaderDescriptions = new LinkedList<>();
 
-    for (FieldMapping field : config.getMappedFields()) {
-        // 1) Keep existing fast-path for plain object pointers
-        try {
-            String property = field.getCompiledSourcePointer() != null
-                    ? field.getCompiledSourcePointer().getMatchingProperty()
-                    : null;
-            if (target.equals(property)) {
-                return field;
+    if (!CollectionUtils.isEmpty(routingHeaderConfig.getRoutingHeaders())) {
+        // Use StringJoiner for cleaner separator handling
+        StringJoiner headerJoiner = new StringJoiner(", ");
+
+        for (String header : routingHeaderConfig.getRoutingHeaders()) {
+            String value = request.getHeader(header);
+
+            // Collect all headers into one line
+            headerJoiner.add(header + "=" + value);
+
+            // Validation logic remains the same
+            if (routingHeaderConfig.isRoutingHeaderValidationEnabled()) {
+                if (value == null || value.trim().isEmpty()) {
+                    missingCustomHeaderDescriptions.add(
+                        "MISSING_MANDATORY_ROUTING_HEADER_" + header.toUpperCase()
+                    );
+                }
             }
-        } catch (Exception ignore) {
-            // Some compiled pointers may not support getMatchingProperty() (e.g., array paths) — ignore and fallback.
         }
 
-        // 2) Fallback: parse the pointer string and compare the last token
-        String pointer = resolvePointerString(field);
-        if (pointer == null) continue;
-
-        String lastToken = lastToken(pointer);
-        if (target.equals(lastToken)) {
-            return field;
-        }
+        // Log once for all headers
+        LoggerUtil.info(log, APP_EVENT, ROUTING_HEADER, "HEADERS", headerJoiner.toString());
     }
 
-    return null; // caller can decide whether to assert/throw
-}
-
-/** Gets a usable pointer string from FieldMapping, regardless of how it’s stored. */
-private String resolvePointerString(FieldMapping field) {
-    try {
-        // Prefer explicit source pointer if your FieldMapping exposes it
-        if (field.getSourcePointer() != null) {
-            return field.getSourcePointer();
-        }
-    } catch (Exception ignore) { }
-
-    try {
-        if (field.getCompiledSourcePointer() != null) {
-            // Most compiled pointer implementations have a stable toString() that yields a JSON Pointer-ish path
-            return field.getCompiledSourcePointer().toString();
-        }
-    } catch (Exception ignore) { }
-
-    return null;
-}
-
-/**
- * Extract the last token from a JSON-pointer-like string.
- * Examples:
- *  "/a/b/c"                  -> "c"
- *  "/a/b/0/pnsProductCode"   -> "pnsProductCode"
- *  "/a/*/pnsProductCode"     -> "pnsProductCode"
- *  "a/b/c" (no leading /)    -> "c"
- */
-private String lastToken(String pointer) {
-    if (pointer == null || pointer.isEmpty()) return null;
-
-    // Normalize: split on '/', skip empty parts (handles both "/a/b" and "a/b")
-    String[] parts = pointer.split("/");
-    String last = null;
-    for (String p : parts) {
-        if (p == null || p.isEmpty()) continue;
-        last = p;
-    }
-    if (last == null) return null;
-
-    // If last is an array index like "0", that means the real field name is before it.
-    // But in valid paths to a field, the last token should be the property name.
-    // We still handle corner cases gracefully:
-    if (last.matches("\\d+")) {
-        // look one step back if available
-        // e.g., "/.../0/pnsProductCode" wouldn't end with a digit; we already handled the normal case above.
-        // In case someone passed "/.../pnsProductCode/0", step back:
-        // (rare, but harmless to support)
-        String prev = null;
-        int count = 0;
-        for (String p : parts) {
-            if (p == null || p.isEmpty()) continue;
-            if (count == parts.length - 2) prev = p;
-            count++;
-        }
-        return prev != null && !prev.matches("\\d+") ? prev : last;
-    }
-
-    // Unescape JSON Pointer token (~1 -> /, ~0 -> ~)
-    return last.replace("~1", "/").replace("~0", "~");
+    return missingCustomHeaderDescriptions;
 }
