@@ -1,57 +1,164 @@
 @Service
 @RequiredArgsConstructor
-public class AccountDetailsProvider {
+public class CRRSService {
 
-  private final CasaSummaryUtils casaSummaryUtils;
-  private final GapiRouterFactory gapiRouterFactory;
-  private final ObjectMapper mapper;
+  private final ObjectMapper mapper; // used only for JsonFactory + generator
+  private final AccountDetailsProvider accountDetailsProvider;     // returns String JSON
+  private final AccountHolderDetailsProvider accountHolderProvider; // returns String JSON
 
-  public CasaAccountSummaryResponse getAccountDetails(CasaAccountSummaryRequest req,
-                                                      HttpHeaders headers) throws Exception {
-    final String routing = casaSummaryUtils.checkRoutingSystem(headers,
-        req.getPnsProductCode(), req.getSourceAccountNumber());
+  /**
+   * Streams the combined RSS JSON to the given OutputStream using Jackson Streaming API.
+   */
+  public void writeRssResponse(OutputStream os,
+                               CasaAccountSummaryRequest req,
+                               HttpHeaders headers) throws IOException {
 
-    if (isCbtDs(routing)) {
-      // --- CBTDS branch (controller uses the *list* API here)
-      CasaSummaryRequestList list = new CasaSummaryRequestList();
-      list.setCasaAccountSummaryRequestList(List.of(req));
+    // 1) Call providers (both return JSON strings)
+    final String aJson = accountDetailsProvider.getAccountDetailsJson(req, headers);
+    final String bJson = accountHolderProvider.getAccountHolderListJson(req, headers);
 
-      @SuppressWarnings("unchecked")
-      ResponseEntity<String> resp = (ResponseEntity<String>)
-          gapiRouterFactory.getCasaSummaryList(com.dbs.c2e.mstd.util.Route.CBTDS)
-                           .executeRouter(list, headers);
+    final JsonFactory jf = mapper.getFactory();
+    try (JsonGenerator g = jf.createGenerator(os)) {
+      g.writeStartObject();
 
-      // Body is a JSON String like: { "data": [...], "error": [...] }
-      Map<String, Object> map = mapper.readValue(resp.getBody(), Map.class);
+      // --- "data": [ ...A.data..., {"customerInfo":{cin,cinSuffix}} ]
+      g.writeFieldName("data");
+      g.writeStartArray();
 
-      List<?> data = (List<?>) map.get("data");
-      if (data != null && data.size() == 1) {
-        return mapper.convertValue(data.get(0), CasaAccountSummaryResponse.class);
+      // 1a) copy all elements of A.data into output
+      copyEachArrayElement(jf, g, aJson, "data");
+
+      // 1b) extract CIN/CIN_SUFFIX from B and append as one more data element
+      writeCustomerInfoElement(jf, g, bJson);
+
+      g.writeEndArray();
+
+      // --- "error": copy from A.error (or write [])
+      g.writeFieldName("error");
+      if (!copyWholeArray(jf, g, aJson, "error")) {
+        g.writeStartArray();
+        g.writeEndArray();
       }
 
-      // propagate a meaningful error if present
-      List<?> error = (List<?>) map.get("error");
-      throw new IllegalStateException("CBTDS did not return a single data element. error=" + error);
-    } else {
-      // --- MAINFRAME branch (single summary router)
-      @SuppressWarnings("unchecked")
-      ResponseEntity<?> resp = (ResponseEntity<?>)
-          gapiRouterFactory.getCasaSummary(com.dbs.c2e.mstd.util.Route.MAINFRAME)
-                           .executeRouter(req, headers);
-
-      Object body = resp.getBody();
-      if (body instanceof CasaAccountSummaryResponse r) {
-        return r;
-      }
-      // often it's a LinkedHashMap—map it to the POJO
-      return mapper.convertValue(body, CasaAccountSummaryResponse.class);
+      g.writeEndObject();
+      g.flush();
     }
   }
 
-  private boolean isCbtDs(String routing) {
-    // be tolerant to different representations
-    return "CBTDS".equalsIgnoreCase(routing)
-        || com.dbs.c2e.mstd.util.Route.CBTDS.name().equalsIgnoreCase(routing)
-        || com.dbs.c2e.mstd.util.Route.CBTDS.toString().equalsIgnoreCase(routing);
+  /**
+   * Find fieldName == "data" in source JSON, iterate the array and copy each element
+   * into the generator. This lets us append our own element afterwards.
+   */
+  private void copyEachArrayElement(JsonFactory jf, JsonGenerator g, String srcJson, String fieldName) throws IOException {
+    try (JsonParser p = jf.createParser(srcJson)) {
+      while (p.nextToken() != null) {
+        if (p.currentToken() == JsonToken.FIELD_NAME && fieldName.equals(p.getCurrentName())) {
+          if (p.nextToken() == JsonToken.START_ARRAY) {
+            while (p.nextToken() != JsonToken.END_ARRAY) {
+              // positioned at START_OBJECT (or value) for one element
+              g.copyCurrentStructure(p); // copies exactly that one element
+            }
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  /**
+   * Copy fieldName array wholesale (START_ARRAY..END_ARRAY) from srcJson into generator.
+   * @return true if the field existed and was copied, false otherwise.
+   */
+  private boolean copyWholeArray(JsonFactory jf, JsonGenerator g, String srcJson, String fieldName) throws IOException {
+    try (JsonParser p = jf.createParser(srcJson)) {
+      while (p.nextToken() != null) {
+        if (p.currentToken() == JsonToken.FIELD_NAME && fieldName.equals(p.getCurrentName())) {
+          JsonToken t = p.nextToken();
+          if (t == JsonToken.START_ARRAY) {
+            g.copyCurrentStructure(p); // copies the entire array
+            return true;
+          } else if (t == JsonToken.VALUE_NULL) {
+            g.writeStartArray(); g.writeEndArray();
+            return true;
+          } else {
+            // not an array; write empty array to be safe
+            g.writeStartArray(); g.writeEndArray();
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Parses AccountHolderDetails JSON and writes:
+   *   { "customerInfo": { "cin": "...", "cinSuffix": "..." } }
+   * Picks jointAccountOrder==1 if present; otherwise uses first holder.
+   */
+  private void writeCustomerInfoElement(JsonFactory jf, JsonGenerator g, String bJson) throws IOException {
+    String firstCin = null, firstCinSuffix = null;
+    String chosenCin = null, chosenCinSuffix = null;
+    boolean sawAnyHolder = false;
+    boolean chosePrimary = false;
+
+    try (JsonParser p = jf.createParser(bJson)) {
+      while (p.nextToken() != null && !chosePrimary) {
+        if (p.currentToken() == JsonToken.FIELD_NAME && "accountHolders".equals(p.getCurrentName())) {
+          if (p.nextToken() == JsonToken.START_ARRAY) {
+            boolean firstAssigned = false;
+            // iterate holders
+            while (p.nextToken() != JsonToken.END_ARRAY && !chosePrimary) {
+              if (p.currentToken() != JsonToken.START_OBJECT) {
+                p.skipChildren();
+                continue;
+              }
+              sawAnyHolder = true;
+
+              String tmpCin = null, tmpSuffix = null;
+              Integer tmpOrder = null;
+
+              // read one holder object
+              while (p.nextToken() != JsonToken.END_OBJECT) {
+                if (p.currentToken() == JsonToken.FIELD_NAME) {
+                  String name = p.getCurrentName();
+                  JsonToken vt = p.nextToken();
+                  if (vt == JsonToken.VALUE_STRING) {
+                    if ("cin".equals(name)) tmpCin = p.getValueAsString();
+                    else if ("cinSuffix".equals(name)) tmpSuffix = p.getValueAsString();
+                  } else if (vt.isNumeric() && "jointAccountOrder".equals(name)) {
+                    tmpOrder = p.getIntValue();
+                  } else {
+                    p.skipChildren();
+                  }
+                }
+              }
+
+              if (!firstAssigned) {
+                firstCin = tmpCin; firstCinSuffix = tmpSuffix; firstAssigned = true;
+              }
+              if (tmpOrder != null && tmpOrder == 1) {
+                chosenCin = tmpCin; chosenCinSuffix = tmpSuffix; chosePrimary = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (!chosePrimary) { // fall back to first holder if no primary found
+      chosenCin = firstCin; chosenCinSuffix = firstCinSuffix;
+    }
+
+    // Only write customerInfo element if we found at least one holder
+    if (sawAnyHolder) {
+      g.writeStartObject();                // element in data[]
+      g.writeFieldName("customerInfo");
+      g.writeStartObject();
+      if (chosenCin != null)     g.writeStringField("cin", chosenCin);
+      if (chosenCinSuffix != null) g.writeStringField("cinSuffix", chosenCinSuffix);
+      g.writeEndObject();
+      g.writeEndObject();
+    }
   }
 }
