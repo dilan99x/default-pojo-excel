@@ -1,26 +1,57 @@
-// what we need back (only the bits we actually read)
-@Data
-public class AccountHolderListResponse {
-  private List<ProductAccount> data;
-  private Status status;
-  private TraceInfo traceInfo;
+@Service
+@RequiredArgsConstructor
+public class AccountDetailsProvider {
 
-  @Data public static class ProductAccount {
-    private String productTypeCode;
-    private String productReferenceNumber;
-    private List<AccountHolder> accountHolders;
+  private final CasaSummaryUtils casaSummaryUtils;
+  private final GapiRouterFactory gapiRouterFactory;
+  private final ObjectMapper mapper;
+
+  public CasaAccountSummaryResponse getAccountDetails(CasaAccountSummaryRequest req,
+                                                      HttpHeaders headers) throws Exception {
+    final String routing = casaSummaryUtils.checkRoutingSystem(headers,
+        req.getPnsProductCode(), req.getSourceAccountNumber());
+
+    if (isCbtDs(routing)) {
+      // --- CBTDS branch (controller uses the *list* API here)
+      CasaSummaryRequestList list = new CasaSummaryRequestList();
+      list.setCasaAccountSummaryRequestList(List.of(req));
+
+      @SuppressWarnings("unchecked")
+      ResponseEntity<String> resp = (ResponseEntity<String>)
+          gapiRouterFactory.getCasaSummaryList(com.dbs.c2e.mstd.util.Route.CBTDS)
+                           .executeRouter(list, headers);
+
+      // Body is a JSON String like: { "data": [...], "error": [...] }
+      Map<String, Object> map = mapper.readValue(resp.getBody(), Map.class);
+
+      List<?> data = (List<?>) map.get("data");
+      if (data != null && data.size() == 1) {
+        return mapper.convertValue(data.get(0), CasaAccountSummaryResponse.class);
+      }
+
+      // propagate a meaningful error if present
+      List<?> error = (List<?>) map.get("error");
+      throw new IllegalStateException("CBTDS did not return a single data element. error=" + error);
+    } else {
+      // --- MAINFRAME branch (single summary router)
+      @SuppressWarnings("unchecked")
+      ResponseEntity<?> resp = (ResponseEntity<?>)
+          gapiRouterFactory.getCasaSummary(com.dbs.c2e.mstd.util.Route.MAINFRAME)
+                           .executeRouter(req, headers);
+
+      Object body = resp.getBody();
+      if (body instanceof CasaAccountSummaryResponse r) {
+        return r;
+      }
+      // often it's a LinkedHashMap—map it to the POJO
+      return mapper.convertValue(body, CasaAccountSummaryResponse.class);
+    }
   }
 
-  @Data public static class AccountHolder {
-    private String cmcpId;
-    private String cin;
-    private String cinSuffix;
-    private Integer customerType;
-    private Integer jointAccountOrder;
-    private String registeredName;
-    private String nameLine1;
+  private boolean isCbtDs(String routing) {
+    // be tolerant to different representations
+    return "CBTDS".equalsIgnoreCase(routing)
+        || com.dbs.c2e.mstd.util.Route.CBTDS.name().equalsIgnoreCase(routing)
+        || com.dbs.c2e.mstd.util.Route.CBTDS.toString().equalsIgnoreCase(routing);
   }
-
-  @Data public static class Status { private int statusCode; }
-  @Data public static class TraceInfo { private String traceId; private String spanId; private String timestamp; }
 }
