@@ -1,0 +1,83 @@
+// tiny POJO you already have (or equivalent)
+@Data
+@AllArgsConstructor @NoArgsConstructor
+public class CustomerInfo {
+  private String cin;
+  private String cinSuffix;
+}
+
+@Service
+@RequiredArgsConstructor
+public class CRRSService {
+
+  private final ObjectMapper mapper;                     // for JsonFactory
+  private final AccountDetailsProvider accountProvider;  // returns AccountSummary as JSON String
+  private final AccountHolderDetailsProvider holderProvider; // returns CustomerInfo POJO
+
+  public void writeRssResponse(OutputStream os,
+                               CasaAccountSummaryRequest req,
+                               HttpHeaders headers) throws IOException {
+    // A: summary JSON (String), B: holder details as POJO
+    final String aJson = accountProvider.getAccountDetailsJson(req, headers);
+    final CustomerInfo holder = holderProvider.getPrimaryCustomerInfo(req, headers);
+
+    streamAppendCustomerInfo(aJson, holder, os);
+  }
+
+  /**
+   * Streaming: copy everything from A, but when we hit "data" (array)
+   * copy its elements and then append { "customerInfo": { cin, cinSuffix } }.
+   */
+  private void streamAppendCustomerInfo(String accountSummaryJson,
+                                        CustomerInfo holder,
+                                        OutputStream os) throws IOException {
+    JsonFactory jf = mapper.getFactory();
+    try (JsonParser p = jf.createParser(accountSummaryJson);
+         JsonGenerator g = jf.createGenerator(os)) {
+
+      // Expecting root object
+      if (p.nextToken() != JsonToken.START_OBJECT) {
+        throw new IOException("AccountSummary root is not an object");
+      }
+      g.writeStartObject();
+
+      // Walk all top-level fields
+      while (p.nextToken() != JsonToken.END_OBJECT) {
+        String field = p.getCurrentName();
+        p.nextToken(); // move to field value
+
+        if ("data".equals(field) && p.currentToken() == JsonToken.START_ARRAY) {
+          g.writeFieldName("data");
+          g.writeStartArray();
+
+          // copy existing elements of data[]
+          while (p.nextToken() != JsonToken.END_ARRAY) {
+            g.copyCurrentStructure(p);
+          }
+
+          // append our single element using the POJO values
+          if (holder != null && holder.getCin() != null) {
+            g.writeStartObject();
+            g.writeFieldName("customerInfo");
+            g.writeStartObject();
+            g.writeStringField("cin", holder.getCin());
+            if (holder.getCinSuffix() != null) {
+              g.writeStringField("cinSuffix", holder.getCinSuffix());
+            }
+            g.writeEndObject();
+            g.writeEndObject();
+          }
+
+          g.writeEndArray();
+        } else {
+          // copy any other field (error, etc.) as-is
+          g.writeFieldName(field);
+          g.copyCurrentStructure(p);
+        }
+      }
+
+      g.writeEndObject();
+      g.flush();
+    }
+  }
+}
