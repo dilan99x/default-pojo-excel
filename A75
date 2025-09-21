@@ -2,34 +2,32 @@
 @RequiredArgsConstructor
 public class CRRSService {
 
-  private final ObjectMapper mapper; // for JsonFactory/streaming
-  private final AccountDetailsProvider accountDetailsProvider;     // returns String JSON (A)
-  private final AccountHolderDetailsProvider accountHolderProvider; // returns String JSON (B)
+  private final ObjectMapper mapper; // only for JsonFactory
+  private final AccountDetailsProvider accountDetailsProvider;      // returns String JSON
+  private final AccountHolderDetailsProvider accountHolderProvider; // returns String JSON
 
   public void writeRssResponse(OutputStream os,
                                CasaAccountSummaryRequest req,
                                HttpHeaders headers) throws IOException {
-
-    final String aJson = accountDetailsProvider.getAccountDetailsJson(req, headers);   // A
-    final String bJson = accountHolderProvider.getAccountHolderListJson(req, headers); // B
+    final String aJson = accountDetailsProvider.getAccountDetailsJson(req, headers);
+    final String bJson = accountHolderProvider.getAccountHolderListJson(req, headers);
 
     final JsonFactory jf = mapper.getFactory();
     try (JsonGenerator g = jf.createGenerator(os)) {
       g.writeStartObject();
 
-      // ----- data : [ ...A.data..., { "customerInfo": { "cin": "...", "cinSuffix": "..." } } ]
+      // data: [ ...A.data..., {"customerInfo":{cin,cinSuffix}} ]
       g.writeFieldName("data");
       g.writeStartArray();
 
-      // Copy every element from A.data verbatim
       copyEachArrayElement(jf, g, aJson, "data");
 
-      // Append just one extra element from B (cin/cinSuffix)
-      writeCustomerInfoElement(jf, g, bJson, /*matchProductRef*/ req.getSourceAccountNumber());
+      // NEW: pass the requested account number so we can match productReferenceNumber in B
+      writeCustomerInfoElement(jf, g, bJson, req.getSourceAccountNumber());
 
       g.writeEndArray();
 
-      // ----- error : copy from A.error (or write [])
+      // error: copy from A.error (or [])
       g.writeFieldName("error");
       if (!copyWholeArray(jf, g, aJson, "error")) {
         g.writeStartArray(); g.writeEndArray();
@@ -40,17 +38,13 @@ public class CRRSService {
     }
   }
 
-  // === helpers ================================================================
-
-  /** Copy all elements of the named array from srcJson into the generator. */
   private void copyEachArrayElement(JsonFactory jf, JsonGenerator g, String srcJson, String fieldName) throws IOException {
-    if (srcJson == null || srcJson.isBlank()) return;
     try (JsonParser p = jf.createParser(srcJson)) {
       while (p.nextToken() != null) {
         if (p.currentToken() == JsonToken.FIELD_NAME && fieldName.equals(p.getCurrentName())) {
           if (p.nextToken() == JsonToken.START_ARRAY) {
             while (p.nextToken() != JsonToken.END_ARRAY) {
-              g.copyCurrentStructure(p); // copies the single element (object/primitive)
+              g.copyCurrentStructure(p);
             }
           }
           return;
@@ -59,15 +53,13 @@ public class CRRSService {
     }
   }
 
-  /** Copy the whole array for the given field, if it exists. */
   private boolean copyWholeArray(JsonFactory jf, JsonGenerator g, String srcJson, String fieldName) throws IOException {
-    if (srcJson == null || srcJson.isBlank()) return false;
     try (JsonParser p = jf.createParser(srcJson)) {
       while (p.nextToken() != null) {
         if (p.currentToken() == JsonToken.FIELD_NAME && fieldName.equals(p.getCurrentName())) {
           JsonToken t = p.nextToken();
           if (t == JsonToken.START_ARRAY) {
-            g.copyCurrentStructure(p); // copies entire array
+            g.copyCurrentStructure(p);
             return true;
           } else if (t == JsonToken.VALUE_NULL) {
             g.writeStartArray(); g.writeEndArray();
@@ -83,97 +75,106 @@ public class CRRSService {
   }
 
   /**
-   * Read B JSON and write one element:
-   *   { "customerInfo": { "cin": "...", "cinSuffix": "..." } }
-   * Selection:
-   *   - If a data item matches productReferenceNumber == matchProductRef, use that item.
-   *   - Prefer holder with jointAccountOrder == 1, else fall back to the first holder.
-   *   - If nothing found, write nothing.
+   * Parse B:
+   *   - go to root.data[]
+   *   - choose item with productReferenceNumber == targetAcct (else first item)
+   *   - from its accountHolders[], pick jointAccountOrder==1 else first holder
+   *   - write: { "customerInfo": { "cin": "...", "cinSuffix": "..." } }
    */
-  private void writeCustomerInfoElement(JsonFactory jf,
-                                        JsonGenerator g,
-                                        String bJson,
-                                        @Nullable String matchProductRef) throws IOException {
-    if (bJson == null || bJson.isBlank()) return;
-
-    String chosenCin = null, chosenSuffix = null;
+  private void writeCustomerInfoElement(JsonFactory jf, JsonGenerator g, String bJson, String targetAcct) throws IOException {
+    String fallbackCin = null, fallbackSuffix = null;
+    String matchCin = null, matchSuffix = null;
+    boolean sawAnyHolder = false;
+    boolean foundMatchItem = false;
 
     try (JsonParser p = jf.createParser(bJson)) {
-      // Find "data"
-      if (!seekField(p, "data")) return;
-      if (p.nextToken() != JsonToken.START_ARRAY) return;
+      // seek "data" array
+      while (p.nextToken() != null) {
+        if (p.currentToken() == JsonToken.FIELD_NAME && "data".equals(p.getCurrentName())) {
+          if (p.nextToken() != JsonToken.START_ARRAY) break;
 
-      // Iterate data[]
-      while (p.nextToken() != JsonToken.END_ARRAY) {
-        if (p.currentToken() != JsonToken.START_OBJECT) {
-          p.skipChildren(); continue;
-        }
+          // iterate items in data[]
+          while (p.nextToken() == JsonToken.START_OBJECT) {
+            String thisPrn = null;
+            // temp holder picks for this item
+            String firstCin = null, firstSuffix = null;
+            String primaryCin = null, primarySuffix = null;
 
-        // For this data item:
-        String productRef = null;
-        String primaryCin = null, primarySuffix = null; // jointAccountOrder==1
-        String firstCin = null, firstSuffix = null;
-        boolean firstAssigned = false;
+            // read one item object
+            while (p.nextToken() != JsonToken.END_OBJECT) {
+              if (p.currentToken() != JsonToken.FIELD_NAME) { p.skipChildren(); continue; }
+              String name = p.getCurrentName();
+              JsonToken vt = p.nextToken();
 
-        while (p.nextToken() != JsonToken.END_OBJECT) {
-          if (p.currentToken() != JsonToken.FIELD_NAME) continue;
-          String name = p.getCurrentName();
-          JsonToken t = p.nextToken();
+              if ("productReferenceNumber".equals(name) && vt == JsonToken.VALUE_STRING) {
+                thisPrn = p.getValueAsString();
+              } else if ("accountHolders".equals(name) && vt == JsonToken.START_ARRAY) {
+                // iterate holders
+                boolean firstAssigned = false;
+                while (p.nextToken() == JsonToken.START_OBJECT) {
+                  String hCin = null, hSuffix = null;
+                  Integer order = null;
 
-          if ("productReferenceNumber".equals(name) && t == JsonToken.VALUE_STRING) {
-            productRef = p.getValueAsString();
-          } else if ("accountHolders".equals(name) && t == JsonToken.START_ARRAY) {
-            // iterate holders
-            while (p.nextToken() != JsonToken.END_ARRAY) {
-              if (p.currentToken() != JsonToken.START_OBJECT) { p.skipChildren(); continue; }
-              String cin = null, suf = null;
-              Integer order = null;
-              while (p.nextToken() != JsonToken.END_OBJECT) {
-                if (p.currentToken() == JsonToken.FIELD_NAME) {
-                  String hn = p.getCurrentName();
-                  JsonToken ht = p.nextToken();
-                  if ("cin".equals(hn) && ht == JsonToken.VALUE_STRING) cin = p.getValueAsString();
-                  else if ("cinSuffix".equals(hn) && ht == JsonToken.VALUE_STRING) suf = p.getValueAsString();
-                  else if ("jointAccountOrder".equals(hn) && ht.isNumeric()) order = p.getIntValue();
-                  else p.skipChildren();
+                  while (p.nextToken() != JsonToken.END_OBJECT) {
+                    if (p.currentToken() != JsonToken.FIELD_NAME) { p.skipChildren(); continue; }
+                    String hn = p.getCurrentName();
+                    JsonToken hvt = p.nextToken();
+                    if ("cin".equals(hn) && hvt == JsonToken.VALUE_STRING) hCin = p.getValueAsString();
+                    else if ("cinSuffix".equals(hn) && hvt == JsonToken.VALUE_STRING) hSuffix = p.getValueAsString();
+                    else if ("jointAccountOrder".equals(hn) && hvt.isNumeric()) order = p.getIntValue();
+                    else p.skipChildren();
+                  }
+
+                  if (!firstAssigned) {
+                    firstCin = hCin; firstSuffix = hSuffix; firstAssigned = true;
+                  }
+                  if (order != null && order == 1) {
+                    primaryCin = hCin; primarySuffix = hSuffix;
+                  }
                 }
+                // array end reached
+                sawAnyHolder = sawAnyHolder || firstCin != null || primaryCin != null;
+              } else {
+                p.skipChildren();
               }
-              if (!firstAssigned) { firstCin = cin; firstSuffix = suf; firstAssigned = true; }
-              if (order != null && order == 1) { primaryCin = cin; primarySuffix = suf; }
-            }
-          } else {
-            p.skipChildren(); // ignore status/traceInfo/other fields
-          }
-        }
+            } // end item object
 
-        boolean productMatches = (matchProductRef == null || matchProductRef.equals(productRef));
-        if (productMatches) {
-          chosenCin = (primaryCin != null ? primaryCin : firstCin);
-          chosenSuffix = (primarySuffix != null ? primarySuffix : firstSuffix);
-          break; // we found our data item
+            // pick holder for this item
+            String chosenCin = (primaryCin != null ? primaryCin : firstCin);
+            String chosenSuffix = (primaryCin != null ? primarySuffix : firstSuffix);
+
+            // remember first item’s pick as global fallback
+            if (!foundMatchItem && fallbackCin == null && chosenCin != null) {
+              fallbackCin = chosenCin; fallbackSuffix = chosenSuffix;
+            }
+
+            // if this item matches target account, store and stop scanning further
+            if (!foundMatchItem && targetAcct != null && targetAcct.equals(thisPrn) && chosenCin != null) {
+              matchCin = chosenCin; matchSuffix = chosenSuffix; foundMatchItem = true;
+              // we can break out of the data[] loop by skipping remaining elements
+              // but Jackson streaming requires consuming the array properly; so just continue
+            }
+          } // end while items
+          break; // done with data[]
         }
       }
     }
 
-    if (chosenCin != null) {
-      g.writeStartObject();              // one element inside data[]
+    // choose best available
+    String outCin = (matchCin != null ? matchCin : fallbackCin);
+    String outSuffix = (matchSuffix != null ? matchSuffix : fallbackSuffix);
+
+    // Only write if we actually found a holder with a CIN
+    if (sawAnyHolder && outCin != null && !outCin.isEmpty()) {
+      g.writeStartObject();
       g.writeFieldName("customerInfo");
       g.writeStartObject();
-      g.writeStringField("cin", chosenCin);
-      if (chosenSuffix != null) {
-        g.writeStringField("cinSuffix", chosenSuffix);
+      g.writeStringField("cin", outCin);
+      if (outSuffix != null && !outSuffix.isEmpty()) {
+        g.writeStringField("cinSuffix", outSuffix);
       }
       g.writeEndObject();
       g.writeEndObject();
     }
-  }
-
-  /** Move parser forward until it hits FIELD_NAME == fieldName. Returns true if found. */
-  private boolean seekField(JsonParser p, String fieldName) throws IOException {
-    while (p.nextToken() != null) {
-      if (p.currentToken() == JsonToken.FIELD_NAME && fieldName.equals(p.getCurrentName())) return true;
-      // do not skip children globally here — we want a linear scan
-    }
-    return false;
   }
 }
