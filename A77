@@ -81,3 +81,18 @@ public class CRRSService {
     }
   }
 }
+
+
+@PostMapping(value="/vX/SG/deposits/casa/rss", produces=MediaType.APPLICATION_JSON_VALUE)
+public ResponseEntity<String> getRss(@RequestBody CasaAccountSummaryRequest req,
+                                     @RequestHeader HttpHeaders headers) throws IOException {
+  var mapper = new ObjectMapper();
+  var sw = new StringWriter();                        // buffers in memory
+  try (var gen = mapper.getFactory().createGenerator(sw)) {
+    crrsService.writeRssResponse(gen, req, headers); // overload to accept JsonGenerator
+  }
+  return ResponseEntity.ok()
+      .contentType(MediaType.APPLICATION_JSON)
+      .body(sw.toString());
+}
+
