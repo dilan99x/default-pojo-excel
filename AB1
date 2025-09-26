@@ -1,0 +1,61 @@
+private static Map<String, String> extractCinAndCinSuffix(String json) throws IOException {
+    Map<String, String> result = new HashMap<>();
+    JsonFactory factory = new JsonFactory();
+
+    try (JsonParser parser = factory.createParser(json)) {
+        while (parser.nextToken() != null) {
+            if (parser.getCurrentToken() == JsonToken.FIELD_NAME) {
+                String fieldName = parser.getCurrentName();
+                parser.nextToken(); // move to value
+
+                if (CIN.equals(fieldName)) {
+                    result.put(CIN, parser.getValueAsString());
+                } else if (CIN_SUFFIX.equals(fieldName)) {
+                    result.put(CIN_SUFFIX, parser.getValueAsString());
+                } else if (REGISTERED_NAME.equals(fieldName)) {
+                    result.put(REGISTERED_NAME, parser.getValueAsString());
+                }
+                // No early break — later occurrences win (last one kept)
+            }
+        }
+    }
+
+    return result;
+}
+
+
+private String appendCustomerInfo(String accountDetailsJson,
+                                  Map<String, String> cinDetailsMap) throws IOException {
+
+    String cin = cinDetailsMap.get(CIN);
+    String cinSuffix = cinDetailsMap.get(CIN_SUFFIX);
+    String registeredName = cinDetailsMap.get(REGISTERED_NAME);
+
+    JsonNode root = objectMapper.readTree(accountDetailsJson);
+    if (!(root instanceof ObjectNode obj)) {
+        throw new IOException("AccountSummary root is not a JSON object");
+    }
+
+    ArrayNode data = obj.withArray("data");
+
+    if (cin != null && !cin.isEmpty()) {
+        // { "customerInfo": [ { ... } ] }
+        ObjectNode wrapper = objectMapper.createObjectNode();
+        ArrayNode customerInfoArr = wrapper.putArray(CUSTOMER_INFO);
+
+        ObjectNode ci = objectMapper.createObjectNode();
+        ci.put(CIN, cin);
+
+        if (cinSuffix != null && !cinSuffix.isEmpty()) {
+            ci.put(CIN_SUFFIX, cinSuffix);
+        }
+        if (registeredName != null && !registeredName.isEmpty()) {
+            ci.put(REGISTERED_NAME, registeredName);
+        }
+
+        customerInfoArr.add(ci);
+        data.add(wrapper); // <-- same position in main response as today
+    }
+
+    return objectMapper.writeValueAsString(root);
+}
