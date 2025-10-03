@@ -1,47 +1,55 @@
-@Service
-@RequiredArgsConstructor
-public class CRRSService {
+filters:
+  classes:                      # alias → fully-qualified class names (FQNs)
+    AccountSummary: com.yourapp.casa.dto.AccountSummary
+    AccountBalances: com.yourapp.casa.dto.AccountBalances
+    ChildAccount: com.yourapp.casa.dto.ChildAccount
+    SchemeCodeDescription: com.yourapp.casa.dto.SchemeCodeDescription
+    ErrorItem: com.yourapp.casa.dto.ErrorItem
 
-  private final ObjectMapper mapper;                    // reuse app-wide mapper
-  private final AccountDetailsProvider accountProvider; // returns Account Summary as JSON String
+  channels:                     # channel name → (class alias → allowed properties)
+    default:
+      AccountSummary: [ sourceAccountNumber, accountCurrency, accountStatus, accountBalances, childAccounts ]
+      AccountBalances: [ availableBalance ]
+      ChildAccount: [ sourceAccountNumber ]
+      SchemeCodeDescription: [ schemeCodeDescription, descriptionCategory ]
+      ErrorItem: [ timestamp, xCorrelationId, errorCode, errorDescription ]
 
-  // You already have this extractor; it returns {"cin": "...", "cinSuffix": "..."}
-  // Map<String,String> extractCinAndCinSuffix(String holderJson) throws IOException
+    MobileApp:
+      AccountSummary: [ sourceAccountNumber, accountCurrency, accountStatus, accountBalances ]
+      AccountBalances: [ availableBalance ]
+      ErrorItem: [ timestamp, xCorrelationId, errorCode, errorDescription ]
 
-  public String buildRssJson(CasaAccountSummaryRequest req,
-                             HttpHeaders headers,
-                             String holderJson) throws IOException {
-    String accountJson = accountProvider.getAccountDetailsJson(req, headers);
+    InternetBanking:
+      AccountSummary: [ sourceAccountNumber, accountName, accountType, accountBalances, childAccounts ]
+      AccountBalances: [ accountBalance ]
+      ChildAccount: [ sourceAccountNumber ]
+      ErrorItem: [ timestamp, xCorrelationId, errorCode, errorDescription ]
 
-    Map<String,String> cinMap = extractCinAndCinSuffix(holderJson);
-    String cin = cinMap.get("cin");
-    String cinSuffix = cinMap.get("cinSuffix");
+    PartnerAPI:
+      AccountSummary: [ sourceAccountNumber, schemeCode, schemeCodeDescription ]
+      SchemeCodeDescription: [ schemeCodeDescription, descriptionCategory ]
+      ErrorItem: [ timestamp, xCorrelationId, errorCode ]
 
-    return appendCustomerInfo(accountJson, cin, cinSuffix);
-  }
 
-  /** Append { "customerInfo": {cin, cinSuffix} } to root.data[] */
-  private String appendCustomerInfo(String accountDetailsJson,
-                                    String cin,
-                                    String cinSuffix) throws IOException {
-    JsonNode root = mapper.readTree(accountDetailsJson);
-    if (!(root instanceof ObjectNode obj)) {
-      throw new IOException("AccountSummary root is not a JSON object");
-    }
+spring:
+  config:
+    import: "classpath:field-filters.yml"
 
-    // creates the array if missing, or returns it if present
-    ArrayNode data = obj.withArray("data");
 
-    if (cin != null && !cin.isEmpty()) {
-      ObjectNode wrapper = mapper.createObjectNode();           // element inside data[]
-      ObjectNode ci = wrapper.putObject("customerInfo");
-      ci.put("cin", cin);
-      if (cinSuffix != null && !cinSuffix.isEmpty()) {
-        ci.put("cinSuffix", cinSuffix);
-      }
-      data.add(wrapper); // append at the end (use data.insert(0, wrapper) to put first)
-    }
+package com.example.casa.filters.config;
 
-    return mapper.writeValueAsString(root);
-  }
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.List;
+import java.util.Map;
+
+@Data
+@ConfigurationProperties(prefix = "filters")
+public class FilterRulesProperties {
+    /** alias → fully-qualified class name */
+    private Map<String, String> classes;
+
+    /** channel → (classAlias → allowed property names) */
+    private Map<String, Map<String, List<String>>> channels;
 }
