@@ -1,0 +1,449 @@
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+import java.util.List;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class CasaSummaryResponse {
+    private List<AccountSummary> data;
+    private List<ErrorItem> error;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class AccountSummary {
+
+    private String  sourceAccountNumber;
+    private String  accountCurrency;
+    private Integer currencyDecimal;
+    private String  accountManagerId;
+    private String  sourceCustomerId;
+    private Boolean staffIndicator;
+    private String  productType;
+    private String  schemeCode;
+    private List<SchemeCodeDescription> schemeCodeDescription;
+    private String  productIndicatorCode;
+    private String  productIndicator;
+    private String  spclCustomerType;
+    private String  subProductType;
+    private String  accountSignatoryType;
+    private String  brandIndicator;
+    private String  accountName;
+    private String  accountName2;
+    private String  accountNameInNativeLanguage;
+    private String  accountShortName;
+    private String  nickName;
+    private String  openedDate;
+    private String  accountStatus;
+    private String  accountStatusCode;
+    private String  accountStatusDate;
+    private String  accountType;
+    private String  accountTypeDescription;
+    private String  accountClosedFlag;
+    private String  accountClosedDate;
+    private String  accountClosedReasonCode;
+
+    private AccountStatement accountStatement;
+
+    private String  freezeStatusCode;
+    private List<FreezeInfo> freezeInfo;
+
+    private List<RelatedCustomerInfo> relatedCustomerInfo;
+
+    private String  bankCode;
+    private String  branchCode;
+    private String  branchCodeDescription;
+    private String  firstExcessDate;
+
+    private AccountBalances accountBalances;
+
+    private BigDecimal atsInterestAmount;
+    private String  divisionCode;
+    private String  industryCode;
+    private BigDecimal accruedCreditInterestAmount;
+    private BigDecimal odInterestAmount;
+    private BigDecimal minOdInterestAmountWithOdl;
+    private BigDecimal minOdInterestAmountWithoutOdl;
+
+    private Boolean accountFrozenIndicator;
+    private Boolean closureNoticeIndicator;
+    private Boolean debitReferralIndicator;
+    private Boolean irregularSignalIndicator;
+    private Boolean lineOfferedIndicator;
+    private Boolean loanServicingIndicator;
+    private Boolean multipleAccountIndicator;
+    private Boolean noDebitIndicator;
+    private Boolean recallPassbookIndicator;
+    private Boolean updateRequiredIndicator;
+
+    private String  blockCodeIndicator;
+    private String  creditInterestRateType;
+    private String  debitInterestPaidIndicator;
+    private String  creditInterestPaidIndicator;
+    private String  chequeBookExemptIndicator;
+
+    private BigDecimal serviceChargeExemption;
+    private String  serviceChargeExemptionDescription;
+
+    private String  dateOfLastTransaction;
+    private Long    upiNumber;
+
+    private String  sourceMultiCurrencyAccountNumber;
+    private Boolean multiCurrencyAccountFlag;
+
+    private List<ChildAccount> childAccounts;
+
+    private List<PromoCodeItem> promoCode;
+
+    private String  mobileMoneyIdentifier;
+    private String  ifscCode;
+    private String  autoSaverFlag;
+    private String  taxCategoryY;
+    private BigDecimal taxFloorLimit;
+    private BigDecimal withholdingTaxPercent;
+    private String  gstin;
+    private String  faxIndemnity;
+    private String  sweepAllowFlag;
+    private String  pastDueFlag;
+    private String  sanctionLimitExpiryDate;
+    private BigDecimal advancePaidAmount;
+
+    private PrioritySectorDetails prioritySectorDetails;
+
+    private List<NomineeGuardianInfo> nomineeGuardianInfo;
+}
+
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+import java.math.BigDecimal;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class AccountBalances {
+    private BigDecimal availableBalance;
+    private BigDecimal accountBalance;
+    private BigDecimal ledgerBalance;
+    private BigDecimal sanctionLimit;
+    private BigDecimal earmarkDebitAmount;
+    private BigDecimal ffdAvailableAmount;
+    private BigDecimal halfDayHoldBalance;
+    private BigDecimal oneDayHoldBalance;
+    private BigDecimal twoDayHoldBalance;
+    private BigDecimal greaterThanTwoDayHoldBalance;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class SchemeCodeDescription {
+    private String schemeCodeDescription;
+    private String descriptionCategory;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class SchemeCodeDescription {
+    private String schemeCodeDescription;
+    private String descriptionCategory;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class AccountStatement {
+    private String  statementMode;
+    private String  statementCalendar;
+    private String  frequency;
+    private Integer frequencyStartDate;
+    private Integer frequencyDay;
+    private String  frequencyWeekNumber;
+    private String  frequencyHolidayStatus;
+    private String  nextPrintDate;
+    private String  despatchMode;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class FreezeInfo {
+    private String reasonCode;
+    private String reasonDescription;
+    private String remarks;
+}
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class RelatedCustomerInfo {
+    private String relatedPartyCode;
+    private String relatedPartyCodeDescription;
+    private String relatedPartyCustomerId;
+    private String relatedPartyType;
+    private String relatedPartyTypeDescription;
+    private String relatedPartyDeleteFlag;
+    private String relatedPartyAddressType;
+}
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class ChildAccount {
+
+    private String  sourceAccountNumber;
+    private String  accountCurrency;
+    private Integer currencyDecimal;
+    private String  accountManagerId;
+    private String  sourceCustomerId;
+    private Boolean staffIndicator;
+    private String  productType;
+    private String  schemeCode;
+    private List<SchemeCodeDescription> schemeCodeDescription;
+    private String  productIndicatorCode;
+    private String  productIndicator;
+    private String  spclCustomerType;
+    private String  subProductType;
+    private String  accountSignatoryType;
+    private String  brandIndicator;
+    private String  accountName;
+    private String  accountName2;
+    private String  accountNameInNativeLanguage;
+    private String  accountShortName;
+    private String  nickName;
+    private String  openedDate;
+    private String  accountStatus;
+    private String  accountStatusCode;
+    private String  accountStatusDate;
+    private String  accountType;
+    private String  accountTypeDescription;
+    private String  accountClosedFlag;
+    private String  accountClosedDate;
+    private String  accountClosedReasonCode;
+
+    private AccountStatement accountStatement;
+
+    private String  freezeStatusCode;
+    private List<FreezeInfo> freezeInfo;
+
+    private List<RelatedCustomerInfo> relatedCustomerInfo;
+
+    private String  bankCode;
+    private String  branchCode;
+    private String  branchCodeDescription;
+    private String  firstExcessDate;
+
+    private AccountBalances accountBalances;
+
+    private BigDecimal atsInterestAmount;
+    private String  divisionCode;
+    private String  industryCode;
+    private BigDecimal accruedCreditInterestAmount;
+    private BigDecimal odInterestAmount;
+    private BigDecimal minOdInterestAmountWithOdl;
+    private BigDecimal minOdInterestAmountWithoutOdl;
+
+    private Boolean accountFrozenIndicator;
+    private Boolean closureNoticeIndicator;
+    private Boolean debitReferralIndicator;
+    private Boolean irregularSignalIndicator;
+    private Boolean lineOfferedIndicator;
+    private Boolean loanServicingIndicator;
+    private Boolean multipleAccountIndicator;
+    private Boolean noDebitIndicator;
+    private Boolean recallPassbookIndicator;
+    private Boolean updateRequiredIndicator;
+
+    private String  blockCodeIndicator;
+    private String  creditInterestRateType;
+    private String  debitInterestPaidIndicator;
+    private String  creditInterestPaidIndicator;
+    private String  chequeBookExemptIndicator;
+
+    private BigDecimal serviceChargeExemption;
+    private String  serviceChargeExemptionDescription;
+
+    private String  dateOfLastTransaction;
+    private Long    upiNumber;
+}
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class PromoCodeItem {
+    private String promoCode;
+}
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class PrioritySectorDetails {
+    private String prioritySectorCategory;
+    private String prioritySectorSubCategory;
+    private String natureOfActivity;
+    private String mandateReferenceNumber;
+    private String weakerSectionType;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+import java.math.BigDecimal;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class NomineeGuardianInfo {
+    private String registrationNumber;
+    private String name;
+    private String relationshipType;
+
+    private String addressLine1;
+    private String addressLine2;
+    private String addressLine3;
+    private String city;
+    private String state;
+    private String postCode;
+    private String country;
+    private String addressType;
+
+    private String  minorIndicator;
+    private String  nomineeDateOfBirth;
+    private BigDecimal sharePercentage;
+
+    private String guardianCode;
+    private String guardianName;
+    private String guardianDateOfBirth;
+
+    private GuardianAddressInfo guardianAddressInfo;
+
+    private String nomineeDeleteFlag;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class GuardianAddressInfo {
+    private String addressLine1;
+    private String addressLine2;
+    private String addressLine3;
+    private String city;
+    private String state;
+    private String postCode;
+    private String country;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Data;
+
+import java.util.List;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class ErrorItem {
+    private String timestamp;
+
+    @JsonProperty("x-correlation-id")
+    private String xCorrelationId;
+
+    private String sourceAccountNumber;
+    private String pnsProductCode;
+    private String errorType;
+    private String errorCode;
+    private String errorDescription;
+
+    private List<RestError> restError;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class RestError {
+    private String errorCode;
+    private String errorDescription;
+    private SubErrorDetails subErrorDetails;
+}
+
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class SubErrorDetails {
+    private String errorSubCode;
+    private String errorSubDescription;
+}
