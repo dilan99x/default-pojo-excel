@@ -1,51 +1,11 @@
 package com.yourapp.casa.filters.core;
 
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.databind.SerializerProvider;
-import com.fasterxml.jackson.databind.ser.PropertyWriter;
-import com.fasterxml.jackson.databind.ser.impl.SimpleBeanPropertyFilter;
+import com.fasterxml.jackson.databind.ser.PropertyFilter;
+import com.fasterxml.jackson.databind.ser.impl.SimpleFilterProvider;
 
-import java.util.Map;
-import java.util.Set;
-
-public class ChannelScopedPropertyFilter extends SimpleBeanPropertyFilter {
-
-    private final String channel;
-    private final Map<String, Map<Class<?>, Set<String>>> rulesByChannel;
-    private final boolean defaultDeny;
-
-    public ChannelScopedPropertyFilter(String channel,
-                                       Map<String, Map<Class<?>, Set<String>>> rulesByChannel,
-                                       boolean defaultDeny) {
-        this.channel = (channel == null || channel.isBlank()) ? "default" : channel;
-        this.rulesByChannel = rulesByChannel;
-        this.defaultDeny = defaultDeny;
-    }
-
-    @Override
-    public void serializeAsField(Object pojo, JsonGenerator jgen, SerializerProvider prov, PropertyWriter writer) throws Exception {
-        Map<Class<?>, Set<String>> perClass = rulesByChannel.get(channel);
-        if (perClass == null) perClass = rulesByChannel.get("default"); // fallback
-
-        if (perClass == null) {
-            if (!defaultDeny) {
-                writer.serializeAsField(pojo, jgen, prov);
-            }
-            return;
-        }
-
-        Set<String> allowed = perClass.get(pojo.getClass());
-        if (allowed == null) {
-            if (!defaultDeny) {
-                writer.serializeAsField(pojo, jgen, prov);
-            }
-            return;
-        }
-
-        if (allowed.contains(writer.getName())) {
-            writer.serializeAsField(pojo, jgen, prov);
-        } else if (!jgen.canOmitFields()) {
-            writer.serializeAsOmittedField(pojo, jgen, prov);
-        }
+public class ChannelScopedFilterProvider extends SimpleFilterProvider {
+    public ChannelScopedFilterProvider(String filterId, PropertyFilter filter) {
+        setFailOnUnknownId(false);       // ignore objects without @JsonFilter
+        addFilter(filterId, filter);
     }
 }
