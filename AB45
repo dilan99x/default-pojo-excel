@@ -447,3 +447,281 @@ public class SubErrorDetails {
     private String errorSubCode;
     private String errorSubDescription;
 }
+
+
+
+
+
+
+filters:
+  classes:                      # alias → fully-qualified class names
+    CasaSummaryResponse: com.yourapp.casa.dto.CasaSummaryResponse
+    AccountSummary: com.yourapp.casa.dto.AccountSummary
+    AccountBalances: com.yourapp.casa.dto.AccountBalances
+    ChildAccount: com.yourapp.casa.dto.ChildAccount
+    AccountStatement: com.yourapp.casa.dto.AccountStatement
+    FreezeInfo: com.yourapp.casa.dto.FreezeInfo
+    RelatedCustomerInfo: com.yourapp.casa.dto.RelatedCustomerInfo
+    SchemeCodeDescription: com.yourapp.casa.dto.SchemeCodeDescription
+    PromoCodeItem: com.yourapp.casa.dto.PromoCodeItem
+    PrioritySectorDetails: com.yourapp.casa.dto.PrioritySectorDetails
+    NomineeGuardianInfo: com.yourapp.casa.dto.NomineeGuardianInfo
+    GuardianAddressInfo: com.yourapp.casa.dto.GuardianAddressInfo
+    ErrorItem: com.yourapp.casa.dto.ErrorItem
+    RestError: com.yourapp.casa.dto.RestError
+    SubErrorDetails: com.yourapp.casa.dto.SubErrorDetails
+
+  channels:
+    default:                    # full pass-through (all fields)
+      CasaSummaryResponse: [ data, error ]
+
+      AccountSummary:
+        - sourceAccountNumber
+        - accountCurrency
+        - currencyDecimal
+        - accountManagerId
+        - sourceCustomerId
+        - staffIndicator
+        - productType
+        - schemeCode
+        - schemeCodeDescription
+        - productIndicatorCode
+        - productIndicator
+        - spclCustomerType
+        - subProductType
+        - accountSignatoryType
+        - brandIndicator
+        - accountName
+        - accountName2
+        - accountNameInNativeLanguage
+        - accountShortName
+        - nickName
+        - openedDate
+        - accountStatus
+        - accountStatusCode
+        - accountStatusDate
+        - accountType
+        - accountTypeDescription
+        - accountClosedFlag
+        - accountClosedDate
+        - accountClosedReasonCode
+        - accountStatement
+        - freezeStatusCode
+        - freezeInfo
+        - relatedCustomerInfo
+        - bankCode
+        - branchCode
+        - branchCodeDescription
+        - firstExcessDate
+        - accountBalances
+        - atsInterestAmount
+        - divisionCode
+        - industryCode
+        - accruedCreditInterestAmount
+        - odInterestAmount
+        - minOdInterestAmountWithOdl
+        - minOdInterestAmountWithoutOdl
+        - accountFrozenIndicator
+        - closureNoticeIndicator
+        - debitReferralIndicator
+        - irregularSignalIndicator
+        - lineOfferedIndicator
+        - loanServicingIndicator
+        - multipleAccountIndicator
+        - noDebitIndicator
+        - recallPassbookIndicator
+        - updateRequiredIndicator
+        - blockCodeIndicator
+        - creditInterestRateType
+        - debitInterestPaidIndicator
+        - creditInterestPaidIndicator
+        - chequeBookExemptIndicator
+        - serviceChargeExemption
+        - serviceChargeExemptionDescription
+        - dateOfLastTransaction
+        - upiNumber
+        - sourceMultiCurrencyAccountNumber
+        - multiCurrencyAccountFlag
+        - childAccounts
+        - promoCode
+        - mobileMoneyIdentifier
+        - ifscCode
+        - autoSaverFlag
+        - taxCategoryY
+        - taxFloorLimit
+        - withholdingTaxPercent
+        - gstin
+        - faxIndemnity
+        - sweepAllowFlag
+        - pastDueFlag
+        - sanctionLimitExpiryDate
+        - advancePaidAmount
+        - prioritySectorDetails
+        - nomineeGuardianInfo
+
+      ChildAccount:
+        - sourceAccountNumber
+        - accountCurrency
+        - currencyDecimal
+        - accountManagerId
+        - sourceCustomerId
+        - staffIndicator
+        - productType
+        - schemeCode
+        - schemeCodeDescription
+        - productIndicatorCode
+        - productIndicator
+        - spclCustomerType
+        - subProductType
+        - accountSignatoryType
+        - brandIndicator
+        - accountName
+        - accountName2
+        - accountNameInNativeLanguage
+        - accountShortName
+        - nickName
+        - openedDate
+        - accountStatus
+        - accountStatusCode
+        - accountStatusDate
+        - accountType
+        - accountTypeDescription
+        - accountClosedFlag
+        - accountClosedDate
+        - accountClosedReasonCode
+        - accountStatement
+        - freezeStatusCode
+        - freezeInfo
+        - relatedCustomerInfo
+        - bankCode
+        - branchCode
+        - branchCodeDescription
+        - firstExcessDate
+        - accountBalances
+        - atsInterestAmount
+        - divisionCode
+        - industryCode
+        - accruedCreditInterestAmount
+        - odInterestAmount
+        - minOdInterestAmountWithOdl
+        - minOdInterestAmountWithoutOdl
+        - accountFrozenIndicator
+        - closureNoticeIndicator
+        - debitReferralIndicator
+        - irregularSignalIndicator
+        - lineOfferedIndicator
+        - loanServicingIndicator
+        - multipleAccountIndicator
+        - noDebitIndicator
+        - recallPassbookIndicator
+        - updateRequiredIndicator
+        - blockCodeIndicator
+        - creditInterestRateType
+        - debitInterestPaidIndicator
+        - creditInterestPaidIndicator
+        - chequeBookExemptIndicator
+        - serviceChargeExemption
+        - serviceChargeExemptionDescription
+        - dateOfLastTransaction
+        - upiNumber
+
+      AccountBalances:
+        - availableBalance
+        - accountBalance
+        - ledgerBalance
+        - sanctionLimit
+        - earmarkDebitAmount
+        - ffdAvailableAmount
+        - halfDayHoldBalance
+        - oneDayHoldBalance
+        - twoDayHoldBalance
+        - greaterThanTwoDayHoldBalance
+
+      SchemeCodeDescription:
+        - schemeCodeDescription
+        - descriptionCategory
+
+      AccountStatement:
+        - statementMode
+        - statementCalendar
+        - frequency
+        - frequencyStartDate
+        - frequencyDay
+        - frequencyWeekNumber
+        - frequencyHolidayStatus
+        - nextPrintDate
+        - despatchMode
+
+      FreezeInfo:
+        - reasonCode
+        - reasonDescription
+        - remarks
+
+      RelatedCustomerInfo:
+        - relatedPartyCode
+        - relatedPartyCodeDescription
+        - relatedPartyCustomerId
+        - relatedPartyType
+        - relatedPartyTypeDescription
+        - relatedPartyDeleteFlag
+        - relatedPartyAddressType
+
+      PromoCodeItem:
+        - promoCode
+
+      PrioritySectorDetails:
+        - prioritySectorCategory
+        - prioritySectorSubCategory
+        - natureOfActivity
+        - mandateReferenceNumber
+        - weakerSectionType
+
+      NomineeGuardianInfo:
+        - registrationNumber
+        - name
+        - relationshipType
+        - addressLine1
+        - addressLine2
+        - addressLine3
+        - city
+        - state
+        - postCode
+        - country
+        - addressType
+        - minorIndicator
+        - nomineeDateOfBirth
+        - sharePercentage
+        - guardianCode
+        - guardianName
+        - guardianDateOfBirth
+        - guardianAddressInfo
+        - nomineeDeleteFlag
+
+      GuardianAddressInfo:
+        - addressLine1
+        - addressLine2
+        - addressLine3
+        - city
+        - state
+        - postCode
+        - country
+
+      ErrorItem:
+        - timestamp
+        - xCorrelationId        # JSON field "x-correlation-id"
+        - sourceAccountNumber
+        - pnsProductCode
+        - errorType
+        - errorCode
+        - errorDescription
+        - restError
+
+      RestError:
+        - errorCode
+        - errorDescription
+        - subErrorDetails
+
+      SubErrorDetails:
+        - errorSubCode
+        - errorSubDescription
+
