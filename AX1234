@@ -1,0 +1,70 @@
+package com.yourapp.casa.filters.web;
+
+import com.yourapp.casa.filters.core.ChannelScopedFilterProvider;
+import com.yourapp.casa.filters.core.ChannelScopedPropertyFilter;
+import com.yourapp.casa.filters.core.FilterRulesRegistry;
+import lombok.RequiredArgsConstructor;
+import org.springframework.core.MethodParameter;
+import org.springframework.http.MediaType;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.http.converter.json.MappingJacksonValue;
+import org.springframework.http.server.ServletServerHttpRequest;
+import org.springframework.http.server.ServerHttpRequest;
+import org.springframework.http.server.ServerHttpResponse;
+import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.ControllerAdvice;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
+
+import jakarta.servlet.http.HttpServletRequest;
+
+@Component
+@ControllerAdvice
+@RequiredArgsConstructor
+public class FilterAdvice implements ResponseBodyAdvice<Object> {
+
+    private static final String CHANNEL_HEADER = "X-CHANNEL-ID";
+
+    private final FilterRulesRegistry registry;
+
+    @Override
+    public boolean supports(MethodParameter returnType,
+                            Class<? extends HttpMessageConverter<?>> converterType) {
+        // Only intercept when Jackson will serialize (JSON)
+        return MappingJackson2HttpMessageConverter.class.isAssignableFrom(converterType);
+    }
+
+    @Override
+    public Object beforeBodyWrite(Object body,
+                                  MethodParameter returnType,
+                                  MediaType contentType,
+                                  Class<? extends HttpMessageConverter<?>> converterType,
+                                  ServerHttpRequest request,
+                                  ServerHttpResponse response) {
+
+        // (Optional) guard: only for JSON-ish responses
+        if (contentType != null && !MediaType.APPLICATION_JSON.includes(contentType)) {
+            return body;
+        }
+
+        // Resolve channel (fallback to "default" happens inside the filter)
+        String channel = null;
+        if (request instanceof ServletServerHttpRequest servletReq) {
+            HttpServletRequest http = servletReq.getServletRequest();
+            channel = http.getHeader(CHANNEL_HEADER);
+        }
+
+        var filter = new ChannelScopedPropertyFilter(
+                channel,
+                registry.getRulesByChannel(),
+                false // defaultDeny=false for demo; pass-through if a class isn't configured
+        );
+
+        var provider = new ChannelScopedFilterProvider(FilterRulesRegistry.FILTER_ID, filter);
+
+        // Always wrap the DTO so Jackson applies our per-request filter provider
+        MappingJacksonValue wrapper = new MappingJacksonValue(body);
+        wrapper.setFilters(provider);
+        return wrapper;
+    }
+}
