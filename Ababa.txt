@@ -9,3 +9,101 @@ public class ChannelScopedFilterProvider extends SimpleFilterProvider {
         addFilter(filterId, filter);
     }
 }
+
+
+////////////////
+
+package com.yourapp.casa.filters.web;
+
+import java.lang.annotation.*;
+
+@Target({ElementType.METHOD, ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+public @interface FilterAs {
+    Class<?> value();  // e.g., CasaSummaryResponse.class
+}
+
+
+//////////////////////
+package com.yourapp.casa.filters.web;
+
+import com.yourapp.casa.filters.core.ChannelScopedFilterProvider;
+import com.yourapp.casa.filters.core.ChannelScopedPropertyFilter;
+import com.yourapp.casa.filters.core.FilterRulesRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import org.springframework.core.MethodParameter;
+import org.springframework.http.MediaType;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.converter.json.MappingJacksonValue;
+import org.springframework.http.server.ServletServerHttpRequest;
+import org.springframework.http.server.ServerHttpRequest;
+import org.springframework.http.server.ServerHttpResponse;
+import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.ControllerAdvice;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
+
+import jakarta.servlet.http.HttpServletRequest;
+
+@Component
+@ControllerAdvice
+@RequiredArgsConstructor
+public class FilterAdvice implements ResponseBodyAdvice<Object> {
+
+    private static final String CHANNEL_HEADER = "X-CHANNEL-ID";
+    private final FilterRulesRegistry registry;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    public boolean supports(MethodParameter returnType, Class<? extends HttpMessageConverter<?>> converterType) {
+        // Let it run for JSON and String JSON; we'll gate inside beforeBodyWrite
+        return true;
+    }
+
+    @Override
+    public Object beforeBodyWrite(Object body, MethodParameter returnType, MediaType contentType,
+                                  Class<? extends HttpMessageConverter<?>> converterType,
+                                  ServerHttpRequest request, ServerHttpResponse response) {
+
+        // Only engage for JSON responses (or where the controller declared JSON)
+        boolean expectsJson = contentType != null && MediaType.APPLICATION_JSON.includes(contentType);
+        if (!expectsJson) return body;
+
+        HttpServletRequest http = ((ServletServerHttpRequest) request).getServletRequest();
+        String channel = http.getHeader(CHANNEL_HEADER);
+
+        var propertyFilter = new ChannelScopedPropertyFilter(
+                channel,
+                registry.getRulesByChannel(),
+                false // defaultDeny=false for demo
+        );
+        var provider = new ChannelScopedFilterProvider(FilterRulesRegistry.FILTER_ID, propertyFilter);
+
+        // CASE A: POJO → normal Jackson path
+        if (!(body instanceof String)) {
+            MappingJacksonValue wrapper = new MappingJacksonValue(body);
+            wrapper.setFilters(provider);
+            return wrapper;
+        }
+
+        // CASE B: String body but declared/produces JSON → parse & filter if @FilterAs present
+        FilterAs ann = returnType.getMethodAnnotation(FilterAs.class);
+        if (ann == null) ann = returnType.getContainingClass().getAnnotation(FilterAs.class);
+        if (ann == null) {
+            // No declared type → we cannot safely apply class/property filters
+            return body; // pass-through
+        }
+
+        try {
+            Object parsed = objectMapper.readValue((String) body, ann.value());
+            MappingJacksonValue wrapper = new MappingJacksonValue(parsed);
+            wrapper.setFilters(provider);
+            response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+            return wrapper;
+        } catch (Exception e) {
+            // Malformed JSON or mismatched DTO → fail open (return original)
+            return body;
+        }
+    }
+}
