@@ -1,130 +1,132 @@
-// --- helper: decide when a token should be treated as an array index ---
-private static final int MAX_ARRAY_INDEX_HINT = 1_000_000; // sane upper bound for "indices"
-private boolean looksLikeArrayIndex(String token) {
-    if (token == null || token.isEmpty()) return false;
-    for (int i = 0; i < token.length(); i++) {
-        if (!Character.isDigit(token.charAt(i))) return false;
+package com.yourapp.casa.filters.core;
+
+import com.fasterxml.jackson.annotation.JsonFilter;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yourapp.casa.filters.config.FilterRulesProperties;
+import jakarta.annotation.PostConstruct;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * Loads channel → class → allowed-property rules from YAML,
+ * attaches @JsonFilter("dynamic") to each DTO via MixIn,
+ * and exposes the compiled rules as immutable maps.
+ */
+@Slf4j
+@Component
+public class FilterRulesRegistry {
+
+    /** The shared Jackson filter id applied via MixIn to filterable DTOs. */
+    public static final String FILTER_ID = "dynamic";
+    public static final String DEFAULT_CHANNEL = "default";
+
+    private final FilterRulesProperties props;
+    private final ObjectMapper objectMapper;
+
+    /** channel → (Class → allowed property names) */
+    @Getter
+    private Map<String, Map<Class<?>, Set<String>>> rulesByChannel = Map.of();
+
+    /** alias → Class (resolved from filters.classes) */
+    @Getter
+    private Map<String, Class<?>> aliasToClass = Map.of();
+
+    public FilterRulesRegistry(FilterRulesProperties props, ObjectMapper objectMapper) {
+        this.props = props;
+        this.objectMapper = objectMapper;
     }
-    try {
-        long v = Long.parseLong(token);
-        return v >= 0 && v <= MAX_ARRAY_INDEX_HINT;
-    } catch (NumberFormatException e) {
-        return false;
-    }
-}
 
+    /** MixIn carrying @JsonFilter(FILTER_ID) so DTOs do not require annotations. */
+    @JsonFilter(FILTER_ID)
+    private static abstract class DynamicMixin { /* marker only */ }
 
+    @PostConstruct
+    public void init() {
+        // 1) Resolve class aliases from YAML
+        Map<String, String> aliasToFqn = Optional.ofNullable(props.getClasses()).orElseGet(Map::of);
+        Map<String, Class<?>> resolved = new LinkedHashMap<>();
 
-@Override
-public void setValueAtPointer(String pointerExpr, JsonNode value, JsonNode targetObjRoot) {
-    if (pointerExpr == null || !pointerExpr.startsWith("/")) {
-        throw new IllegalArgumentException("Invalid JSON Pointer: " + pointerExpr);
-    }
+        aliasToFqn.forEach((alias, fqn) -> {
+            try {
+                Class<?> clz = Class.forName(fqn);
+                resolved.put(alias, clz);
 
-    String[] tokens = pointerExpr.substring(1).split("/");
-    JsonNode current = targetObjRoot;
-
-    // Walk all but the last token to create/descend containers
-    for (int i = 0; i < tokens.length - 1; i++) {
-        String token = com.dbs.cb.gapi.core.utils.AppUtils.decodePointerToken(tokens[i]);
-        String nextTokenRaw = tokens[i + 1];
-        String nextToken    = com.dbs.cb.gapi.core.utils.AppUtils.decodePointerToken(nextTokenRaw);
-
-        boolean wantArrayChild = looksLikeArrayIndex(nextToken);
-
-        if (current instanceof ObjectNode obj) {
-            JsonNode child = obj.get(token);
-
-            if (wantArrayChild) {
-                if (child == null || !child.isArray()) {
-                    child = objectMapper.createArrayNode();
-                    obj.set(token, child);
-                }
-            } else {
-                if (child == null || !child.isObject()) {
-                    child = objectMapper.createObjectNode();
-                    obj.set(token, child);
-                }
+                // 2) Attach @JsonFilter("dynamic") to each DTO via MixIn
+                objectMapper.addMixIn(clz, DynamicMixin.class);
+            } catch (ClassNotFoundException e) {
+                log.warn("filters.classes: class not found for alias='{}' fqn='{}'", alias, fqn);
             }
-            current = child;
+        });
 
-        } else if (current instanceof ArrayNode arr) {
-            // When we're inside an array, the *current* token must select an index.
-            if (!looksLikeArrayIndex(token)) {
-                // Defensive fallback: use index 0 and keep going as an object.
-                int idx = 0;
-                ensureArraySize(arr, idx);
-                JsonNode child = arr.get(idx);
-                if (child == null || !child.isObject()) {
-                    child = objectMapper.createObjectNode();
-                    arr.set(idx, child);
-                }
-                current = child;
-            } else {
-                int idx = Integer.parseInt(token);
-                ensureArraySize(arr, idx);
-                JsonNode child = arr.get(idx);
-                if (child == null || child.isNull() || child.isMissingNode()) {
-                    child = wantArrayChild ? objectMapper.createArrayNode() : objectMapper.createObjectNode();
-                    arr.set(idx, child);
-                }
-                current = child;
+        if (resolved.isEmpty()) {
+            log.warn("No DTO classes registered for filtering (filters.classes is empty).");
+        }
+
+        // Freeze alias map
+        this.aliasToClass = Collections.unmodifiableMap(resolved);
+
+        // 3) Compile channel rules: channel → (Class → allowed field set)
+        Map<String, Map<String, List<String>>> yamlChannels =
+                Optional.ofNullable(props.getChannels()).orElseGet(Map::of);
+
+        Map<String, Map<Class<?>, Set<String>>> compiled = new LinkedHashMap<>();
+
+        yamlChannels.forEach((channel, perClass) -> {
+            Map<Class<?>, Set<String>> classRules = new LinkedHashMap<>();
+
+            if (perClass != null) {
+                perClass.forEach((classAlias, fields) -> {
+                    Class<?> clz = aliasToClass.get(classAlias);
+                    if (clz == null) {
+                        log.warn("filters.channels.{}: unknown class alias '{}'", channel, classAlias);
+                        return;
+                    }
+                    // Use LinkedHashSet to keep insertion order (useful for debugging/comparing)
+                    Set<String> allowed = new LinkedHashSet<>(Optional.ofNullable(fields).orElseGet(List::of));
+                    classRules.put(clz, Collections.unmodifiableSet(allowed));
+                });
             }
-        } else {
-            // If somehow we landed on a scalar, replace it with an object and continue.
-            ObjectNode replaced = objectMapper.createObjectNode();
-            // We don't have the parent reference here, but in normal flows 'current'
-            // should always be a container (Object/Array). This is just a guard.
-            current = replaced;
+
+            compiled.put(channel, Collections.unmodifiableMap(classRules));
+
+            String classesStr = classRules.keySet()
+                    .stream().map(Class::getSimpleName).collect(Collectors.joining(", "));
+            log.info("Compiled rules for channel='{}' → [{}]", channel, classesStr);
+        });
+
+        this.rulesByChannel = Collections.unmodifiableMap(compiled);
+
+        if (!rulesByChannel.containsKey(DEFAULT_CHANNEL)) {
+            log.warn("filters.channels.default is missing; unknown channels will NOT have a defined profile.");
         }
     }
 
-    // Final write
-    String finalToken = com.dbs.cb.gapi.core.utils.AppUtils.decodePointerToken(tokens[tokens.length - 1]);
-
-    if (current instanceof ObjectNode obj) {
-        obj.set(finalToken, value);
-        return;
+    /**
+     * Get the class→fields map for a given channel, falling back to "default" if absent.
+     * Returns an empty map if neither exists (safe for read-only use).
+     */
+    public Map<Class<?>, Set<String>> rulesFor(String channel) {
+        if (channel == null || channel.isBlank()) {
+            return rulesByChannel.getOrDefault(DEFAULT_CHANNEL, Map.of());
+        }
+        return rulesByChannel.getOrDefault(channel, rulesByChannel.getOrDefault(DEFAULT_CHANNEL, Map.of()));
     }
 
-    if (current instanceof ArrayNode arr) {
-        if (looksLikeArrayIndex(finalToken)) {
-            int idx = Integer.parseInt(finalToken);
-            ensureArraySize(arr, idx);
-            arr.set(idx, value);
-        } else {
-            // Final token is NOT a plausible index (e.g., a long account number).
-            // Treat it as a field on an object element. We’ll use index 0 by default.
-            int idx = 0;
-            ensureArraySize(arr, idx);
-            JsonNode child = arr.get(idx);
-            if (child == null || !child.isObject()) {
-                child = objectMapper.createObjectNode();
-                arr.set(idx, child);
-            }
-            ((ObjectNode) child).set(finalToken, value);
-        }
-        return;
+    /**
+     * Get the allowed property names for a specific class under a channel (with default fallback).
+     */
+    public Set<String> allowedFor(String channel, Class<?> clazz) {
+        return rulesFor(channel).getOrDefault(clazz, Set.of());
     }
 
-    // Fallback: if current is neither object nor array, turn root into object-like behavior.
-    // (Shouldn't happen in normal flows.)
-    if (targetObjRoot instanceof ObjectNode rootObj) {
-        rootObj.set(finalToken, value);
-    } else if (targetObjRoot instanceof ArrayNode rootArr && looksLikeArrayIndex(finalToken)) {
-        int idx = Integer.parseInt(finalToken);
-        ensureArraySize(rootArr, idx);
-        rootArr.set(idx, value);
-    } else if (targetObjRoot instanceof ArrayNode rootArr2) {
-        ensureArraySize(rootArr2, 0);
-        JsonNode child = rootArr2.get(0);
-        if (child == null || !child.isObject()) {
-            child = objectMapper.createObjectNode();
-            rootArr2.set(0, child);
-        }
-        ((ObjectNode) child).set(finalToken, value);
-    } else {
-        // As a last resort, do nothing or throw—choose your preferred behavior.
-        // throw new IllegalStateException("Cannot set value at: " + pointerExpr);
+    /**
+     * Convenience: true if we have any rule for this class in the (channel or default) profile.
+     */
+    public boolean isClassConfigured(String channel, Class<?> clazz) {
+        return rulesFor(channel).containsKey(clazz);
     }
 }
