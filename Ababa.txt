@@ -1,132 +1,51 @@
 package com.yourapp.casa.filters.core;
 
-import com.fasterxml.jackson.annotation.JsonFilter;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yourapp.casa.filters.config.FilterRulesProperties;
-import jakarta.annotation.PostConstruct;
-import lombok.Getter;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.ser.PropertyWriter;
+import com.fasterxml.jackson.databind.ser.impl.SimpleBeanPropertyFilter;
 
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.Map;
+import java.util.Set;
 
-/**
- * Loads channel → class → allowed-property rules from YAML,
- * attaches @JsonFilter("dynamic") to each DTO via MixIn,
- * and exposes the compiled rules as immutable maps.
- */
-@Slf4j
-@Component
-public class FilterRulesRegistry {
+public class ChannelScopedPropertyFilter extends SimpleBeanPropertyFilter {
 
-    /** The shared Jackson filter id applied via MixIn to filterable DTOs. */
-    public static final String FILTER_ID = "dynamic";
-    public static final String DEFAULT_CHANNEL = "default";
+    private final String channel;
+    private final Map<String, Map<Class<?>, Set<String>>> rulesByChannel;
+    private final boolean defaultDeny;
 
-    private final FilterRulesProperties props;
-    private final ObjectMapper objectMapper;
-
-    /** channel → (Class → allowed property names) */
-    @Getter
-    private Map<String, Map<Class<?>, Set<String>>> rulesByChannel = Map.of();
-
-    /** alias → Class (resolved from filters.classes) */
-    @Getter
-    private Map<String, Class<?>> aliasToClass = Map.of();
-
-    public FilterRulesRegistry(FilterRulesProperties props, ObjectMapper objectMapper) {
-        this.props = props;
-        this.objectMapper = objectMapper;
+    public ChannelScopedPropertyFilter(String channel,
+                                       Map<String, Map<Class<?>, Set<String>>> rulesByChannel,
+                                       boolean defaultDeny) {
+        this.channel = (channel == null || channel.isBlank()) ? "default" : channel;
+        this.rulesByChannel = rulesByChannel;
+        this.defaultDeny = defaultDeny;
     }
 
-    /** MixIn carrying @JsonFilter(FILTER_ID) so DTOs do not require annotations. */
-    @JsonFilter(FILTER_ID)
-    private static abstract class DynamicMixin { /* marker only */ }
+    @Override
+    public void serializeAsField(Object pojo, JsonGenerator jgen, SerializerProvider prov, PropertyWriter writer) throws Exception {
+        Map<Class<?>, Set<String>> perClass = rulesByChannel.get(channel);
+        if (perClass == null) perClass = rulesByChannel.get("default"); // fallback
 
-    @PostConstruct
-    public void init() {
-        // 1) Resolve class aliases from YAML
-        Map<String, String> aliasToFqn = Optional.ofNullable(props.getClasses()).orElseGet(Map::of);
-        Map<String, Class<?>> resolved = new LinkedHashMap<>();
-
-        aliasToFqn.forEach((alias, fqn) -> {
-            try {
-                Class<?> clz = Class.forName(fqn);
-                resolved.put(alias, clz);
-
-                // 2) Attach @JsonFilter("dynamic") to each DTO via MixIn
-                objectMapper.addMixIn(clz, DynamicMixin.class);
-            } catch (ClassNotFoundException e) {
-                log.warn("filters.classes: class not found for alias='{}' fqn='{}'", alias, fqn);
+        if (perClass == null) {
+            if (!defaultDeny) {
+                writer.serializeAsField(pojo, jgen, prov);
             }
-        });
-
-        if (resolved.isEmpty()) {
-            log.warn("No DTO classes registered for filtering (filters.classes is empty).");
+            return;
         }
 
-        // Freeze alias map
-        this.aliasToClass = Collections.unmodifiableMap(resolved);
-
-        // 3) Compile channel rules: channel → (Class → allowed field set)
-        Map<String, Map<String, List<String>>> yamlChannels =
-                Optional.ofNullable(props.getChannels()).orElseGet(Map::of);
-
-        Map<String, Map<Class<?>, Set<String>>> compiled = new LinkedHashMap<>();
-
-        yamlChannels.forEach((channel, perClass) -> {
-            Map<Class<?>, Set<String>> classRules = new LinkedHashMap<>();
-
-            if (perClass != null) {
-                perClass.forEach((classAlias, fields) -> {
-                    Class<?> clz = aliasToClass.get(classAlias);
-                    if (clz == null) {
-                        log.warn("filters.channels.{}: unknown class alias '{}'", channel, classAlias);
-                        return;
-                    }
-                    // Use LinkedHashSet to keep insertion order (useful for debugging/comparing)
-                    Set<String> allowed = new LinkedHashSet<>(Optional.ofNullable(fields).orElseGet(List::of));
-                    classRules.put(clz, Collections.unmodifiableSet(allowed));
-                });
+        Set<String> allowed = perClass.get(pojo.getClass());
+        if (allowed == null) {
+            if (!defaultDeny) {
+                writer.serializeAsField(pojo, jgen, prov);
             }
-
-            compiled.put(channel, Collections.unmodifiableMap(classRules));
-
-            String classesStr = classRules.keySet()
-                    .stream().map(Class::getSimpleName).collect(Collectors.joining(", "));
-            log.info("Compiled rules for channel='{}' → [{}]", channel, classesStr);
-        });
-
-        this.rulesByChannel = Collections.unmodifiableMap(compiled);
-
-        if (!rulesByChannel.containsKey(DEFAULT_CHANNEL)) {
-            log.warn("filters.channels.default is missing; unknown channels will NOT have a defined profile.");
+            return;
         }
-    }
 
-    /**
-     * Get the class→fields map for a given channel, falling back to "default" if absent.
-     * Returns an empty map if neither exists (safe for read-only use).
-     */
-    public Map<Class<?>, Set<String>> rulesFor(String channel) {
-        if (channel == null || channel.isBlank()) {
-            return rulesByChannel.getOrDefault(DEFAULT_CHANNEL, Map.of());
+        if (allowed.contains(writer.getName())) {
+            writer.serializeAsField(pojo, jgen, prov);
+        } else if (!jgen.canOmitFields()) {
+            writer.serializeAsOmittedField(pojo, jgen, prov);
         }
-        return rulesByChannel.getOrDefault(channel, rulesByChannel.getOrDefault(DEFAULT_CHANNEL, Map.of()));
-    }
-
-    /**
-     * Get the allowed property names for a specific class under a channel (with default fallback).
-     */
-    public Set<String> allowedFor(String channel, Class<?> clazz) {
-        return rulesFor(channel).getOrDefault(clazz, Set.of());
-    }
-
-    /**
-     * Convenience: true if we have any rule for this class in the (channel or default) profile.
-     */
-    public boolean isClassConfigured(String channel, Class<?> clazz) {
-        return rulesFor(channel).containsKey(clazz);
     }
 }
