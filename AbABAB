@@ -1,0 +1,217 @@
+package com.yourapp.casa.filters.config;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.List;
+import java.util.Map;
+
+@Data
+@ConfigurationProperties(prefix = "filters")
+public class FilterRulesProperties {
+    private Map<String, String> classes;                             // alias → FQN
+    private Map<String, Map<String, List<String>>> channels;         // channel → (classAlias → fields)
+}
+
+
+package com.yourapp.casa.filters.config;
+
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@EnableConfigurationProperties(FilterRulesProperties.class)
+public class FiltersPropertiesConfig { }
+
+
+package com.yourapp.casa.filters.core;
+
+import com.yourapp.casa.filters.config.FilterRulesProperties;
+import com.fasterxml.jackson.annotation.JsonFilter;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Component
+public class FilterRulesRegistry {
+
+    public static final String FILTER_ID = "dynamic";
+
+    private final FilterRulesProperties props;
+    private final ObjectMapper objectMapper;
+
+    /** channel → (Class → allowed properties) */
+    @Getter
+    private Map<String, Map<Class<?>, Set<String>>> rulesByChannel = Map.of();
+
+    public FilterRulesRegistry(FilterRulesProperties props, ObjectMapper objectMapper) {
+        this.props = props;
+        this.objectMapper = objectMapper;
+    }
+
+    @PostConstruct
+    public void init() {
+        Map<String, String> aliasToFqn = Optional.ofNullable(props.getClasses()).orElseGet(Map::of);
+        Map<String, Class<?>> aliasToClass = new HashMap<>();
+
+        // Resolve DTO classes & register MixIn with @JsonFilter("dynamic")
+        aliasToFqn.forEach((alias, fqn) -> {
+            try {
+                Class<?> clz = Class.forName(fqn);
+                aliasToClass.put(alias, clz);
+                objectMapper.addMixIn(clz, DynamicMixin.class);
+            } catch (ClassNotFoundException e) {
+                log.warn("Class not found: alias={} fqn={}", alias, fqn);
+            }
+        });
+
+        Map<String, Map<Class<?>, Set<String>>> compiled = new HashMap<>();
+        var channels = Optional.ofNullable(props.getChannels()).orElseGet(Map::of);
+
+        channels.forEach((channel, perClass) -> {
+            Map<Class<?>, Set<String>> clsMap = new HashMap<>();
+            if (perClass != null) {
+                perClass.forEach((classAlias, fields) -> {
+                    Class<?> clz = aliasToClass.get(classAlias);
+                    if (clz == null) {
+                        log.warn("Unknown class alias '{}' in channel '{}'", classAlias, channel);
+                        return;
+                    }
+                    clsMap.put(clz, new HashSet<>(Optional.ofNullable(fields).orElseGet(List::of)));
+                });
+            }
+            compiled.put(channel, clsMap);
+            log.info("Compiled channel='{}' classes={}", channel,
+                    clsMap.keySet().stream().map(Class::getSimpleName).collect(Collectors.toSet()));
+        });
+
+        this.rulesByChannel = compiled;
+
+        if (!rulesByChannel.containsKey("default")) {
+            log.warn("filters.channels.default missing; unknown channels will pass-through");
+        }
+    }
+
+    /** Marker MixIn to attach the JsonFilter id to DTOs */
+    @JsonFilter(FILTER_ID)
+    private static abstract class DynamicMixin { }
+}
+
+
+
+package com.yourapp.casa.filters.core;
+
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.ser.PropertyFilter;
+import com.fasterxml.jackson.databind.ser.PropertyWriter;
+
+import java.util.Map;
+import java.util.Set;
+
+public class ChannelScopedPropertyFilter implements PropertyFilter {
+
+    private final String channel;
+    private final Map<String, Map<Class<?>, Set<String>>> rulesByChannel;
+    private final boolean defaultDeny; // false for demo (unconfigured classes pass-through)
+
+    public ChannelScopedPropertyFilter(String channel,
+                                       Map<String, Map<Class<?>, Set<String>>> rulesByChannel,
+                                       boolean defaultDeny) {
+        this.channel = (channel == null || channel.isBlank()) ? "default" : channel;
+        this.rulesByChannel = rulesByChannel;
+        this.defaultDeny = defaultDeny;
+    }
+
+    @Override
+    public void serializeAsField(Object pojo, JsonGenerator jgen, SerializerProvider prov, PropertyWriter writer) throws Exception {
+        Map<Class<?>, Set<String>> perClass = rulesByChannel.get(channel);
+        if (perClass == null) perClass = rulesByChannel.get("default"); // fallback
+
+        if (perClass == null) {
+            if (defaultDeny) return;
+            writer.serializeAsField(pojo, jgen, prov);
+            return;
+        }
+
+        Set<String> allowed = perClass.get(pojo.getClass());
+        if (allowed == null) {
+            if (defaultDeny) return;
+            writer.serializeAsField(pojo, jgen, prov);
+            return;
+        }
+
+        if (allowed.contains(writer.getName())) {
+            writer.serializeAsField(pojo, jgen, prov);
+        } else if (!jgen.canOmitFields()) {
+            writer.serializeAsOmittedField(pojo, jgen, prov);
+        }
+    }
+
+    @Override public void depositSchemaProperty(PropertyWriter w, com.fasterxml.jackson.databind.jsonFormatVisitors.JsonObjectFormatVisitor v, SerializerProvider p) {}
+    @Override public void depositSchemaProperty(PropertyWriter w, com.fasterxml.jackson.databind.node.ObjectNode props, SerializerProvider p) {}
+}
+
+
+package com.yourapp.casa.filters.core;
+
+import com.fasterxml.jackson.databind.ser.PropertyFilter;
+import com.fasterxml.jackson.databind.ser.impl.SimpleFilterProvider;
+
+public class ChannelScopedFilterProvider extends SimpleFilterProvider {
+    public ChannelScopedFilterProvider(String filterId, PropertyFilter filter) {
+        setFailOnUnknownId(false);       // ignore objects without @JsonFilter
+        addFilter(filterId, filter);
+    }
+}
+
+
+package com.yourapp.casa.filters.web;
+
+import java.lang.annotation.*;
+
+@Target({ElementType.METHOD, ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+public @interface FilterAs {
+    Class<?> value();  // e.g., CasaSummaryResponse.class
+}
+
+
+// src/main/java/com/yourapp/casa/filters/web/FilterAs.java
+package com.yourapp.casa.filters.web;
+
+import java.lang.annotation.Documented;
+import java.lang.annotation.Retention;
+import java.lang.annotation.Target;
+
+import static java.lang.annotation.ElementType.METHOD;
+import static java.lang.annotation.ElementType.TYPE;
+import static java.lang.annotation.RetentionPolicy.RUNTIME;
+
+/**
+ * Marks a controller (or specific handler method) whose String JSON response
+ * should be treated as if it were the given DTO type, so channel-based
+ * @JsonFilter rules can be applied by ResponseBodyAdvice.
+ *
+ * Usage:
+ *   @FilterAs(CasaSummaryResponse.class)
+ *   @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
+ *   public String myEndpoint() { return "{\"data\":[],\"error\":[]}"; }
+ */
+@Documented
+@Target({METHOD, TYPE})
+@Retention(RUNTIME)
+public @interface FilterAs {
+    /**
+     * The DTO class that the String JSON represents.
+     * Example: CasaSummaryResponse.class
+     */
+    Class<?> value();
+}
