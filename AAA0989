@@ -1,0 +1,129 @@
+# src/main/resources/channel-views.yml
+channel-views:
+  views:
+    BaseView:
+      view-class: com.yourapp.casa.view.Views$Base
+      channels: [ default ]      # fallback profile
+
+    AccountSummaryView1:
+      view-class: com.yourapp.casa.view.Views$MobileApp
+      channels: [ MobileApp, ChannelA, ChannelB ]
+
+    InternetBankingView:
+      view-class: com.yourapp.casa.view.Views$InternetBanking
+      channels:
+        - InternetBanking
+        - IB2
+
+    PartnerApiView:
+      view-class: com.yourapp.casa.view.Views$PartnerAPI
+      channels: [ PartnerAPI ]
+
+////////
+# application.yml
+spring:
+  config:
+    import: "classpath:channel-views.yml"
+
+
+////////
+// src/main/java/com/yourapp/casa/view/ChannelViewProperties.java
+package com.yourapp.casa.view;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@Data
+@ConfigurationProperties(prefix = "channel-views")
+public class ChannelViewProperties {
+
+  /** view-alias -> definition */
+  private Map<String, ViewDef> views = new HashMap<>();
+
+  @Data
+  public static class ViewDef {
+    /** Fully qualified view class name, e.g., com.yourapp.casa.view.Views$MobileApp */
+    private String viewClass;
+    /** All channels that should use this view */
+    private List<String> channels = new ArrayList<>();
+  }
+}
+
+/////////
+// src/main/java/com/yourapp/casa/view/ChannelViewConfig.java
+package com.yourapp.casa.view;
+
+import jakarta.annotation.PostConstruct;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.util.ClassUtils;
+
+import java.util.*;
+
+@Slf4j
+@Configuration
+@RequiredArgsConstructor
+public class ChannelViewConfig {
+
+  private final ChannelViewProperties props;
+
+  /** Final mapping used by the converter: channelId -> view class */
+  @Getter
+  private Map<String, Class<?>> channelClassMap = Map.of();
+
+  @PostConstruct
+  public void init() {
+    Map<String, Class<?>> out = new LinkedHashMap<>();
+
+    props.getViews().forEach((alias, def) -> {
+      Class<?> viewClazz;
+      try {
+        viewClazz = ClassUtils.forName(def.getViewClass(), ClassUtils.getDefaultClassLoader());
+      } catch (ClassNotFoundException e) {
+        log.warn("Skipping view '{}': class not found {}", alias, def.getViewClass());
+        return;
+      }
+
+      for (String raw : def.getChannels()) {
+        String ch = normalize(raw);
+        if (ch == null) continue;
+
+        Class<?> prev = out.putIfAbsent(ch, viewClazz);
+        if (prev != null && !prev.equals(viewClazz)) {
+          // Fail fast on conflicting assignments
+          throw new IllegalStateException(
+            "Channel '" + ch + "' is mapped to multiple views: "
+            + prev.getName() + " and " + viewClazz.getName());
+        }
+      }
+    });
+
+    // Ensure a default fallback exists
+    out.putIfAbsent("default", com.yourapp.casa.view.Views.Base.class);
+
+    this.channelClassMap = Collections.unmodifiableMap(out);
+    log.info("Channel→View map: {}", this.channelClassMap);
+  }
+
+  public Class<?> getViewFor(String channelId) {
+    String key = normalize(channelId);
+    if (key == null) key = "default";
+    return channelClassMap.getOrDefault(key, channelClassMap.get("default"));
+  }
+
+  private static String normalize(String s) {
+    if (s == null) return null;
+    String t = s.trim();
+    return t.isEmpty() ? null : t; // keep case as-is unless you want to lower-case headers too
+  }
+}
+
+
+/////
