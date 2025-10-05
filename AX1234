@@ -1,108 +1,15 @@
-package com.yourapp.casa.filters.web;
+// src/main/java/com/yourapp/casa/view/Views.java
+package com.yourapp.casa.view;
 
-import com.yourapp.casa.filters.core.ChannelScopedFilterProvider;
-import com.yourapp.casa.filters.core.ChannelScopedPropertyFilter;
-import com.yourapp.casa.filters.core.FilterRulesRegistry;
-import lombok.RequiredArgsConstructor;
-import org.springframework.core.MethodParameter;
-import org.springframework.http.MediaType;
-import org.springframework.http.converter.HttpMessageConverter;
-import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
-import org.springframework.http.converter.json.MappingJacksonValue;
-import org.springframework.http.server.ServletServerHttpRequest;
-import org.springframework.http.server.ServerHttpRequest;
-import org.springframework.http.server.ServerHttpResponse;
-import org.springframework.stereotype.Component;
-import org.springframework.web.bind.annotation.ControllerAdvice;
-import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
+/** Marker interfaces used by @JsonView. */
+public final class Views {
+  /** Shown to every channel. */
+  public interface Base {}
 
-import jakarta.servlet.http.HttpServletRequest;
+  /** Example per-channel views — add more as you need. */
+  public interface MobileApp extends Base {}
+  public interface InternetBanking extends Base {}
+  public interface PartnerAPI extends Base {}
 
-@Component
-@ControllerAdvice
-@RequiredArgsConstructor
-public class FilterAdvice implements ResponseBodyAdvice<Object> {
-
-    private static final String CHANNEL_HEADER = "X-CHANNEL-ID";
-
-    private final FilterRulesRegistry registry;
-
-    @Override
-    public boolean supports(MethodParameter returnType,
-                            Class<? extends HttpMessageConverter<?>> converterType) {
-        // Only intercept when Jackson will serialize (JSON)
-        return MappingJackson2HttpMessageConverter.class.isAssignableFrom(converterType);
-    }
-
-    @Override
-    public Object beforeBodyWrite(Object body,
-                                  MethodParameter returnType,
-                                  MediaType contentType,
-                                  Class<? extends HttpMessageConverter<?>> converterType,
-                                  ServerHttpRequest request,
-                                  ServerHttpResponse response) {
-
-        // (Optional) guard: only for JSON-ish responses
-        if (contentType != null && !MediaType.APPLICATION_JSON.includes(contentType)) {
-            return body;
-        }
-
-        // Resolve channel (fallback to "default" happens inside the filter)
-        String channel = null;
-        if (request instanceof ServletServerHttpRequest servletReq) {
-            HttpServletRequest http = servletReq.getServletRequest();
-            channel = http.getHeader(CHANNEL_HEADER);
-        }
-
-        var filter = new ChannelScopedPropertyFilter(
-                channel,
-                registry.getRulesByChannel(),
-                false // defaultDeny=false for demo; pass-through if a class isn't configured
-        );
-
-        var provider = new ChannelScopedFilterProvider(FilterRulesRegistry.FILTER_ID, filter);
-
-        // Always wrap the DTO so Jackson applies our per-request filter provider
-        MappingJacksonValue wrapper = new MappingJacksonValue(body);
-        wrapper.setFilters(provider);
-        return wrapper;
-    }
+  private Views() {}
 }
-
-//////////////////////////////
-// StrictChannelPropertyFilter.java
-public class StrictChannelPropertyFilter extends com.fasterxml.jackson.databind.ser.impl.SimpleBeanPropertyFilter {
-
-  private final String channel; // null = no header
-  private final Map<String, Map<Class<?>, Set<String>>> rulesByChannel;
-
-  public StrictChannelPropertyFilter(String channel,
-                                     Map<String, Map<Class<?>, Set<String>>> rulesByChannel) {
-    this.channel = (channel != null && !channel.isBlank()) ? channel : null;
-    this.rulesByChannel = rulesByChannel;
-  }
-
-  @Override
-  public void serializeAsField(Object pojo, JsonGenerator jgen, SerializerProvider prov, PropertyWriter w) throws Exception {
-    Map<Class<?>, Set<String>> perClass;
-    if (channel == null) {
-      // no header → default profile
-      perClass = rulesByChannel.get("default");
-    } else {
-      // header present → channel only (no fallback)
-      perClass = rulesByChannel.get(channel);
-      if (perClass == null) return; // unknown channel → strict deny
-    }
-    if (perClass == null) return; // no default profile configured → strict deny
-
-    Set<String> allowed = perClass.get(pojo.getClass());
-    if (allowed == null) return; // class not configured → strict deny
-
-    if (allowed.contains(w.getName())) {
-      w.serializeAsField(pojo, jgen, prov);
-    } else if (!jgen.canOmitFields()) {
-      w.serializeAsOmittedField(pojo, jgen, prov);
-    }
-  }
-}
-
