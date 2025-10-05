@@ -22,3 +22,186 @@ channelViews:
     InternetBanking: com.yourapp.casa.view.Views$InternetBanking
     PartnerAPI: com.yourapp.casa.view.Views$PartnerAPI
 
+
+//////////////////////////////////////////////////////////////////
+// src/main/java/com/yourapp/casa/view/ChannelViewProperties.java
+package com.yourapp.casa.view;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.Map;
+
+@Data
+@ConfigurationProperties(prefix = "channelViews")
+public class ChannelViewProperties {
+  /** channelId → fully qualified view class name (e.g., com.yourapp.casa.view.Views$MobileApp). */
+  private Map<String, String> channels;
+}
+
+
+
+//////////////////////////////////////////////////////////////
+// src/main/java/com/yourapp/casa/view/ChannelViewConfig.java
+package com.yourapp.casa.view;
+
+import jakarta.annotation.PostConstruct;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.util.ClassUtils;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+@Slf4j
+@Configuration
+@RequiredArgsConstructor
+public class ChannelViewConfig {
+
+  private final ChannelViewProperties props;
+
+  /** channelId → resolved Class<?> for @JsonView */
+  @Getter
+  private Map<String, Class<?>> channelClassMap = Map.of();
+
+  @PostConstruct
+  public void init() {
+    Map<String, Class<?>> tmp = new LinkedHashMap<>();
+    if (props.getChannels() != null) {
+      props.getChannels().forEach((channel, fqn) -> {
+        try {
+          Class<?> view = ClassUtils.forName(fqn, ClassUtils.getDefaultClassLoader());
+          tmp.put(channel, view);
+        } catch (ClassNotFoundException e) {
+          log.warn("View class not found for channel {}: {}", channel, fqn);
+        }
+      });
+    }
+    this.channelClassMap = Collections.unmodifiableMap(tmp);
+    if (!channelClassMap.containsKey("default")) {
+      log.warn("channelViews.channels.default missing; unknown/blank channels will fail back to Base only if you handle it explicitly.");
+    }
+  }
+
+  public Class<?> getViewFor(String channelId) {
+    if (channelId == null || channelId.isBlank()) {
+      return channelClassMap.getOrDefault("default", Views.Base.class);
+    }
+    return channelClassMap.getOrDefault(channelId, channelClassMap.getOrDefault("default", Views.Base.class));
+  }
+}
+/////////////////////////////////////
+// src/main/java/com/yourapp/casa/view/ViewPropsConfig.java
+package com.yourapp.casa.view;
+
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@EnableConfigurationProperties(ChannelViewProperties.class)
+public class ViewPropsConfig {}
+
+////////////////////////////////////
+// src/main/java/com/yourapp/casa/view/JacksonViewConfig.java
+package com.yourapp.casa.view;
+
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.context.annotation.Configuration;
+
+import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
+
+@Configuration
+@RequiredArgsConstructor
+public class JacksonViewConfig {
+
+  private final ObjectMapper objectMapper;
+
+  @PostConstruct
+  public void init() {
+    // Important for "annotate only extras":
+    // unannotated fields are included in every view.
+    objectMapper.configure(MapperFeature.DEFAULT_VIEW_INCLUSION, true);
+  }
+}
+
+//////////////////////////////////////////////
+// src/main/java/com/yourapp/casa/view/ChannelAwareConverter.java
+package com.yourapp.casa.view;
+
+import com.fasterxml.jackson.databind.ObjectWriter;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.http.HttpOutputMessage;
+import org.springframework.http.converter.HttpMessageNotWritableException;
+import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import jakarta.servlet.http.HttpServletRequest;
+import java.io.IOException;
+import java.lang.reflect.Type;
+
+@Component
+public class ChannelAwareConverter extends MappingJackson2HttpMessageConverter {
+
+  private static final String CHANNEL_HEADER = "X-CHANNEL-ID";
+  private final ChannelViewConfig channelViewConfig;
+
+  public ChannelAwareConverter(com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+                               ChannelViewConfig channelViewConfig) {
+    super(objectMapper);
+    this.channelViewConfig = channelViewConfig;
+  }
+
+  @Override
+  protected void writeInternal(Object object, Type type, HttpOutputMessage outputMessage)
+      throws IOException, HttpMessageNotWritableException {
+
+    String channelId = resolveChannelHeader();
+    Class<?> view = channelViewConfig.getViewFor(channelId);
+
+    ObjectWriter writer = this.getObjectMapper().writerWithView(view);
+    writer.writeValue(outputMessage.getBody(), object);
+  }
+
+  private String resolveChannelHeader() {
+    var attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+    if (attrs == null) return null;
+    HttpServletRequest req = attrs.getRequest();
+    return req.getHeader(CHANNEL_HEADER);
+  }
+}
+
+/////////////////////////////////////////////
+
+// src/main/java/com/yourapp/casa/view/WebConfig.java
+package com.yourapp.casa.view;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.util.List;
+
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+
+  private final ChannelAwareConverter channelAwareConverter;
+
+  public WebConfig(ChannelAwareConverter channelAwareConverter) {
+    this.channelAwareConverter = channelAwareConverter;
+  }
+
+  @Override
+  public void configureMessageConverters(List<HttpMessageConverter<?>> converters) {
+    converters.add(0, channelAwareConverter); // put ours first
+  }
+}
+
+////////////////////////////
+
+
