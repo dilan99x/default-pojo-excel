@@ -13,3 +13,12 @@ public final class Views {
 
   private Views() {}
 }
+
+
+channelViews:
+  channels:
+    default: com.yourapp.casa.view.Views$Base
+    MobileApp: com.yourapp.casa.view.Views$MobileApp
+    InternetBanking: com.yourapp.casa.view.Views$InternetBanking
+    PartnerAPI: com.yourapp.casa.view.Views$PartnerAPI
+
