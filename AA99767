@@ -1,0 +1,350 @@
+package com.yourapp.casa.view;
+
+/** Marker interfaces for @JsonView. No implementation needed. */
+public final class Views {
+  /** Base fields visible to everyone. */
+  public interface Base {}
+
+  /** Channel views (extend Base to inherit base fields). */
+  public interface MobileApp extends Base {}
+  public interface InternetBanking extends Base {}
+  public interface PartnerAPI extends Base {}
+
+  private Views() {}
+}
+
+/////////
+package com.yourapp.casa.view;
+
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Configuration;
+
+/** Ensure unannotated fields are included for all active views. */
+@Configuration
+@RequiredArgsConstructor
+public class JacksonViewConfig {
+  private final ObjectMapper objectMapper;
+
+  @PostConstruct
+  public void init() {
+    objectMapper.configure(MapperFeature.DEFAULT_VIEW_INCLUSION, true);
+  }
+}
+
+//////////////
+
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonView;
+import com.yourapp.casa.view.Views;
+import lombok.Data;
+
+import java.util.List;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class AccountSummary {
+  // ---- Base fields (every channel gets these) ----
+  private String sourceAccountNumber;
+  private String accountCurrency;
+  private String accountStatus;
+
+  private AccountBalances accountBalances;    // nested base object
+  private List<AccountSummary> childAccounts; // reuse same type for children if schema matches
+
+  // ---- Channel-specific extras ----
+  @JsonView(Views.MobileApp.class)
+  private String accountType;                 // MobileApp-only extra
+
+  @JsonView(Views.InternetBanking.class)
+  private String accountName;                 // InternetBanking-only extra
+
+  // If an entire nested object is channel-specific, annotate the reference:
+  // @JsonView(Views.MobileApp.class)
+  // private AccountStatement accountStatement;
+}
+
+///////////////
+package com.yourapp.casa.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonView;
+import com.yourapp.casa.view.Views;
+import lombok.Data;
+
+import java.math.BigDecimal;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class AccountBalances {
+  // base fields
+  private BigDecimal availableBalance;
+  private BigDecimal accountBalance;
+
+  // extras
+  @JsonView(Views.MobileApp.class)
+  private BigDecimal ledgerBalance;
+
+  @JsonView(Views.PartnerAPI.class)
+  private BigDecimal sanctionLimit;
+}
+
+//////////////
+channel-views:
+  views:
+    BaseView:
+      view-class: com.yourapp.casa.view.Views$Base
+      channels: [ default ]          # fallback profile
+
+    AccountSummaryView1:
+      view-class: com.yourapp.casa.view.Views$MobileApp
+      channels: [ MobileApp, ChannelA ]
+
+    InternetBankingView:
+      view-class: com.yourapp.casa.view.Views$InternetBanking
+      channels:
+        - InternetBanking
+        - ChannelA                    # ChannelA belongs to two views → union of fields
+
+    PartnerApiView:
+      view-class: com.yourapp.casa.view.Views$PartnerAPI
+      channels: [ PartnerAPI ]
+
+////////////
+spring:
+  config:
+    import: "classpath:channel-views.yml"
+
+//////////
+package com.yourapp.casa.view;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@Data
+@ConfigurationProperties(prefix = "channel-views")
+public class ChannelViewProperties {
+
+  /** view-alias -> definition */
+  private Map<String, ViewDef> views = new HashMap<>();
+
+  @Data
+  public static class ViewDef {
+    /** FQN of the @JsonView interface, e.g., com.yourapp.casa.view.Views$MobileApp */
+    private String viewClass;
+    /** Channels that should use this view */
+    private List<String> channels = new ArrayList<>();
+  }
+}
+
+
+/////////
+package com.yourapp.casa.view;
+
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@EnableConfigurationProperties(ChannelViewProperties.class)
+public class ViewPropsConfig {}
+
+
+////////
+package com.yourapp.casa.view;
+
+import jakarta.annotation.PostConstruct;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.util.ClassUtils;
+
+import java.util.*;
+
+@Slf4j
+@Configuration
+@RequiredArgsConstructor
+public class ChannelViewConfig {
+
+  private final ChannelViewProperties props;
+
+  /** Final map used by the converter: channelId -> set of view interfaces */
+  @Getter
+  private Map<String, Set<Class<?>>> channelViewsMap = Map.of();
+
+  @PostConstruct
+  public void init() {
+    Map<String, Set<Class<?>>> out = new LinkedHashMap<>();
+
+    props.getViews().forEach((alias, def) -> {
+      Class<?> viewClazz;
+      try {
+        viewClazz = ClassUtils.forName(def.getViewClass(), ClassUtils.getDefaultClassLoader());
+      } catch (ClassNotFoundException e) {
+        log.warn("Skipping view '{}': class not found {}", alias, def.getViewClass());
+        return;
+      }
+      if (!viewClazz.isInterface()) {
+        throw new IllegalStateException("View class must be an interface: " + def.getViewClass());
+      }
+
+      for (String chRaw : def.getChannels()) {
+        String ch = normalize(chRaw);
+        if (ch == null) continue;
+        out.computeIfAbsent(ch, k -> new LinkedHashSet<>()).add(viewClazz);
+      }
+    });
+
+    // Ensure a default fallback exists
+    out.computeIfAbsent("default", k -> new LinkedHashSet<>()).add(Views.Base.class);
+
+    this.channelViewsMap = Collections.unmodifiableMap(out);
+    log.info("channelViewsMap = {}", this.channelViewsMap);
+  }
+
+  /** For a given channel, return its set of views (may be multiple). */
+  public Set<Class<?>> getViewsFor(String channelId) {
+    String key = normalize(channelId);
+    if (key == null) key = "default";
+    return channelViewsMap.getOrDefault(key, channelViewsMap.get("default"));
+  }
+
+  private static String normalize(String s) {
+    if (s == null) return null;
+    String t = s.trim();
+    return t.isEmpty() ? null : t; // keep case; switch to lower-case if you want case-insensitivity
+  }
+}
+
+///////
+package com.yourapp.casa.view;
+
+import java.lang.reflect.Proxy;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+
+/**
+ * Creates a Class<?> that implements ALL given marker interfaces.
+ * Jackson checks isAssignableFrom(...) against this "composite" class,
+ * so fields annotated with ANY of the parent views are included (union).
+ */
+public final class CompositeViews {
+
+  private static final ConcurrentMap<String, Class<?>> CACHE = new ConcurrentHashMap<>();
+
+  private CompositeViews() {}
+
+  public static Class<?> compose(ClassLoader loader, Collection<Class<?>> parents) {
+    if (parents == null || parents.isEmpty()) {
+      throw new IllegalArgumentException("No parent views provided");
+    }
+
+    // Canonicalize: sort & dedup by FQN for stable keys
+    List<Class<?>> list = parents.stream()
+        .filter(Objects::nonNull)
+        .distinct()
+        .sorted(Comparator.comparing(Class::getName))
+        .toList();
+
+    if (list.size() == 1) return list.get(0);
+
+    String key = String.join("|", list.stream().map(Class::getName).toList());
+    return CACHE.computeIfAbsent(key,
+        k -> Proxy.getProxyClass(loader, list.toArray(new Class<?>[0])));
+  }
+}
+
+////////
+package com.yourapp.casa.view;
+
+import com.fasterxml.jackson.databind.ObjectWriter;
+import org.springframework.http.HttpOutputMessage;
+import org.springframework.http.converter.HttpMessageNotWritableException;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import jakarta.servlet.http.HttpServletRequest;
+import java.io.IOException;
+import java.lang.reflect.Type;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+
+/** Writes JSON using a view (or composite of views) based on X-CHANNEL-ID. */
+@Component
+public class ChannelAwareConverter extends MappingJackson2HttpMessageConverter {
+
+  private static final String CHANNEL_HEADER = "X-CHANNEL-ID";
+
+  private final ChannelViewConfig viewConfig;
+  private final ConcurrentMap<Class<?>, ObjectWriter> writerCache = new ConcurrentHashMap<>();
+
+  public ChannelAwareConverter(com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+                               ChannelViewConfig viewConfig) {
+    super(objectMapper);
+    this.viewConfig = viewConfig;
+  }
+
+  @Override
+  protected void writeInternal(Object object, Type type, HttpOutputMessage outputMessage)
+      throws IOException, HttpMessageNotWritableException {
+
+    String channelId = resolveChannelHeader();
+    Set<Class<?>> views = viewConfig.getViewsFor(channelId);
+
+    Class<?> activeView = CompositeViews.compose(
+        getClass().getClassLoader(), views);
+
+    ObjectWriter writer = writerCache.computeIfAbsent(activeView,
+        v -> this.getObjectMapper().writerWithView(v));
+
+    writer.writeValue(outputMessage.getBody(), object);
+  }
+
+  private String resolveChannelHeader() {
+    var attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+    if (attrs == null) return null;
+    HttpServletRequest req = attrs.getRequest();
+    return req.getHeader(CHANNEL_HEADER);
+  }
+}
+
+
+//////
+package com.yourapp.casa.view;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.util.List;
+
+/** Register our converter first, so it handles JSON serialization. */
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+  private final ChannelAwareConverter converter;
+  public WebConfig(ChannelAwareConverter converter) { this.converter = converter; }
+
+  @Override
+  public void configureMessageConverters(List<HttpMessageConverter<?>> converters) {
+    converters.add(0, converter);
+  }
+}
+
+//////////
