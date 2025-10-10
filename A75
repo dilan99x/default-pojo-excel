@@ -1,112 +1,3 @@
-
-
-package com.dbs.cb.gapi.core.service.impl;
-
-import com.dbs.cb.gapi.core.config.AccountStatusMappingYamlProperties;
-import com.dbs.cb.gapi.core.exception.TransformationException;
-import com.dbs.cb.gapi.core.model.AccountStatusMapping;
-import com.dbs.cb.gapi.core.service.AccountStatusMappingService;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
-
-@Service
-@RequiredArgsConstructor
-@Slf4j
-@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "yaml", matchIfMissing = true)
-public class AccountStatusMappingServiceYamlImpl implements AccountStatusMappingService {
-
-    private final AccountStatusMappingYamlProperties yamlProperties;
-    private final ObjectMapper objectMapper;
-
-    @Override
-    public AccountStatusMapping loadAccountStatusMapping() {
-        try {
-            String jsonConfig = yamlProperties.getJsonConfig();
-            if (!StringUtils.hasText(jsonConfig)) {
-                throw new TransformationException("JSON config not found in YAML configuration");
-            }
-            JsonNode root = objectMapper.readTree(jsonConfig);
-            AccountStatusMapping mapping = objectMapper.treeToValue(
-                    root.get("account-status-mapping"), AccountStatusMapping.class);
-            if (mapping == null) {
-                throw new TransformationException("Failed to parse account-status-mapping from YAML configuration");
-            }
-            log.info("Loaded account status mapping from YAML configuration");
-            return mapping;
-        } catch (Exception e) {
-            log.error("Failed to load account status mapping from YAML", e);
-            throw new TransformationException("Failed to load account status mapping from YAML", e);
-        }
-    }
-
-    @Override
-    public void reloadConfiguration() {
-        loadAccountStatusMapping();
-    }
-}
-
-
-
-///////////////////
-package com.dbs.cb.gapi.core.service.impl;
-
-import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
-import com.dbs.cb.gapi.core.exception.TransformationException;
-import com.dbs.cb.gapi.core.model.AccountStatusMapping;
-import com.dbs.cb.gapi.core.repository.AccountStatusMappingRepository;
-import com.dbs.cb.gapi.core.service.AccountStatusMappingService;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Service;
-
-@Service
-@RequiredArgsConstructor
-@Slf4j
-@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
-public class AccountStatusMappingServiceDbImpl implements AccountStatusMappingService {
-
-    private final ObjectMapper objectMapper;
-    private final AccountStatusMappingRepository repository;
-
-    @Override
-    public AccountStatusMapping loadAccountStatusMapping() {
-        try {
-            AccountStatusMappingEntity entity = repository
-                    .findByConfigKeyAndIsActiveTrue("account-status-mapping")
-                    .orElseThrow(() -> new TransformationException(
-                            "Account status mapping not found in database with key 'account-status-mapping'"));
-
-            JsonNode root = objectMapper.readTree(entity.getConfigValue());
-            AccountStatusMapping mapping = objectMapper.treeToValue(
-                    root.get("account-status-mapping"), AccountStatusMapping.class);
-
-            if (mapping == null) {
-                throw new TransformationException("Failed to parse account-status-mapping from database configuration");
-            }
-            log.info("Loaded account status mapping from database");
-            return mapping;
-        } catch (Exception e) {
-            log.error("Failed to load account status mapping from database", e);
-            throw new TransformationException("Failed to load account status mapping from database", e);
-        }
-    }
-
-    @Override
-    public void reloadConfiguration() {
-        loadAccountStatusMapping();
-    }
-}
-
-///////////////////////////
-
 package com.dbs.cb.gapi.core.repository;
 
 import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
@@ -117,3 +8,16 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Optional;
+
+@Repository
+@Lazy
+@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
+public interface AccountStatusMappingRepository extends JpaRepository<AccountStatusMappingEntity, Long> {
+
+    @Query("SELECT e FROM AccountStatusMappingEntity e WHERE e.configKey = :configKey AND e.isActive = true")
+    Optional<AccountStatusMappingEntity> findByConfigKeyAndIsActiveTrue(@Param("configKey") String configKey);
+
+    @Query("SELECT e FROM AccountStatusMappingEntity e WHERE e.configKey = :configKey")
+    Optional<AccountStatusMappingEntity> findByConfigKey(@Param("configKey") String configKey);
+}
