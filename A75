@@ -21,3 +21,21 @@ public interface AccountStatusMappingRepository extends JpaRepository<AccountSta
     @Query("SELECT e FROM AccountStatusMappingEntity e WHERE e.configKey = :configKey")
     Optional<AccountStatusMappingEntity> findByConfigKey(@Param("configKey") String configKey);
 }
+
+
+
+package com.dbs.cb.gapi.core.config;
+
+import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
+import com.dbs.cb.gapi.core.repository.AccountStatusMappingRepository;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+
+@Configuration
+@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
+@EnableJpaRepositories(basePackageClasses = AccountStatusMappingRepository.class)
+@EntityScan(basePackageClasses = AccountStatusMappingEntity.class)
+public class AccountStatusDbAutoConfiguration {
+}
