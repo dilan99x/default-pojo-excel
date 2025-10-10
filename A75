@@ -1,180 +1,119 @@
+
+
+package com.dbs.cb.gapi.core.service.impl;
+
+import com.dbs.cb.gapi.core.config.AccountStatusMappingYamlProperties;
+import com.dbs.cb.gapi.core.exception.TransformationException;
+import com.dbs.cb.gapi.core.model.AccountStatusMapping;
+import com.dbs.cb.gapi.core.service.AccountStatusMappingService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
 @Service
 @RequiredArgsConstructor
-public class CRRSService {
+@Slf4j
+@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "yaml", matchIfMissing = true)
+public class AccountStatusMappingServiceYamlImpl implements AccountStatusMappingService {
 
-  private final ObjectMapper mapper; // only for JsonFactory
-  private final AccountDetailsProvider accountDetailsProvider;      // returns String JSON
-  private final AccountHolderDetailsProvider accountHolderProvider; // returns String JSON
+    private final AccountStatusMappingYamlProperties yamlProperties;
+    private final ObjectMapper objectMapper;
 
-  public void writeRssResponse(OutputStream os,
-                               CasaAccountSummaryRequest req,
-                               HttpHeaders headers) throws IOException {
-    final String aJson = accountDetailsProvider.getAccountDetailsJson(req, headers);
-    final String bJson = accountHolderProvider.getAccountHolderListJson(req, headers);
-
-    final JsonFactory jf = mapper.getFactory();
-    try (JsonGenerator g = jf.createGenerator(os)) {
-      g.writeStartObject();
-
-      // data: [ ...A.data..., {"customerInfo":{cin,cinSuffix}} ]
-      g.writeFieldName("data");
-      g.writeStartArray();
-
-      copyEachArrayElement(jf, g, aJson, "data");
-
-      // NEW: pass the requested account number so we can match productReferenceNumber in B
-      writeCustomerInfoElement(jf, g, bJson, req.getSourceAccountNumber());
-
-      g.writeEndArray();
-
-      // error: copy from A.error (or [])
-      g.writeFieldName("error");
-      if (!copyWholeArray(jf, g, aJson, "error")) {
-        g.writeStartArray(); g.writeEndArray();
-      }
-
-      g.writeEndObject();
-      g.flush();
-    }
-  }
-
-  private void copyEachArrayElement(JsonFactory jf, JsonGenerator g, String srcJson, String fieldName) throws IOException {
-    try (JsonParser p = jf.createParser(srcJson)) {
-      while (p.nextToken() != null) {
-        if (p.currentToken() == JsonToken.FIELD_NAME && fieldName.equals(p.getCurrentName())) {
-          if (p.nextToken() == JsonToken.START_ARRAY) {
-            while (p.nextToken() != JsonToken.END_ARRAY) {
-              g.copyCurrentStructure(p);
+    @Override
+    public AccountStatusMapping loadAccountStatusMapping() {
+        try {
+            String jsonConfig = yamlProperties.getJsonConfig();
+            if (!StringUtils.hasText(jsonConfig)) {
+                throw new TransformationException("JSON config not found in YAML configuration");
             }
-          }
-          return;
-        }
-      }
-    }
-  }
-
-  private boolean copyWholeArray(JsonFactory jf, JsonGenerator g, String srcJson, String fieldName) throws IOException {
-    try (JsonParser p = jf.createParser(srcJson)) {
-      while (p.nextToken() != null) {
-        if (p.currentToken() == JsonToken.FIELD_NAME && fieldName.equals(p.getCurrentName())) {
-          JsonToken t = p.nextToken();
-          if (t == JsonToken.START_ARRAY) {
-            g.copyCurrentStructure(p);
-            return true;
-          } else if (t == JsonToken.VALUE_NULL) {
-            g.writeStartArray(); g.writeEndArray();
-            return true;
-          } else {
-            g.writeStartArray(); g.writeEndArray();
-            return true;
-          }
-        }
-      }
-      return false;
-    }
-  }
-
-  /**
-   * Parse B:
-   *   - go to root.data[]
-   *   - choose item with productReferenceNumber == targetAcct (else first item)
-   *   - from its accountHolders[], pick jointAccountOrder==1 else first holder
-   *   - write: { "customerInfo": { "cin": "...", "cinSuffix": "..." } }
-   */
-  private void writeCustomerInfoElement(JsonFactory jf, JsonGenerator g, String bJson, String targetAcct) throws IOException {
-    String fallbackCin = null, fallbackSuffix = null;
-    String matchCin = null, matchSuffix = null;
-    boolean sawAnyHolder = false;
-    boolean foundMatchItem = false;
-
-    try (JsonParser p = jf.createParser(bJson)) {
-      // seek "data" array
-      while (p.nextToken() != null) {
-        if (p.currentToken() == JsonToken.FIELD_NAME && "data".equals(p.getCurrentName())) {
-          if (p.nextToken() != JsonToken.START_ARRAY) break;
-
-          // iterate items in data[]
-          while (p.nextToken() == JsonToken.START_OBJECT) {
-            String thisPrn = null;
-            // temp holder picks for this item
-            String firstCin = null, firstSuffix = null;
-            String primaryCin = null, primarySuffix = null;
-
-            // read one item object
-            while (p.nextToken() != JsonToken.END_OBJECT) {
-              if (p.currentToken() != JsonToken.FIELD_NAME) { p.skipChildren(); continue; }
-              String name = p.getCurrentName();
-              JsonToken vt = p.nextToken();
-
-              if ("productReferenceNumber".equals(name) && vt == JsonToken.VALUE_STRING) {
-                thisPrn = p.getValueAsString();
-              } else if ("accountHolders".equals(name) && vt == JsonToken.START_ARRAY) {
-                // iterate holders
-                boolean firstAssigned = false;
-                while (p.nextToken() == JsonToken.START_OBJECT) {
-                  String hCin = null, hSuffix = null;
-                  Integer order = null;
-
-                  while (p.nextToken() != JsonToken.END_OBJECT) {
-                    if (p.currentToken() != JsonToken.FIELD_NAME) { p.skipChildren(); continue; }
-                    String hn = p.getCurrentName();
-                    JsonToken hvt = p.nextToken();
-                    if ("cin".equals(hn) && hvt == JsonToken.VALUE_STRING) hCin = p.getValueAsString();
-                    else if ("cinSuffix".equals(hn) && hvt == JsonToken.VALUE_STRING) hSuffix = p.getValueAsString();
-                    else if ("jointAccountOrder".equals(hn) && hvt.isNumeric()) order = p.getIntValue();
-                    else p.skipChildren();
-                  }
-
-                  if (!firstAssigned) {
-                    firstCin = hCin; firstSuffix = hSuffix; firstAssigned = true;
-                  }
-                  if (order != null && order == 1) {
-                    primaryCin = hCin; primarySuffix = hSuffix;
-                  }
-                }
-                // array end reached
-                sawAnyHolder = sawAnyHolder || firstCin != null || primaryCin != null;
-              } else {
-                p.skipChildren();
-              }
-            } // end item object
-
-            // pick holder for this item
-            String chosenCin = (primaryCin != null ? primaryCin : firstCin);
-            String chosenSuffix = (primaryCin != null ? primarySuffix : firstSuffix);
-
-            // remember first item’s pick as global fallback
-            if (!foundMatchItem && fallbackCin == null && chosenCin != null) {
-              fallbackCin = chosenCin; fallbackSuffix = chosenSuffix;
+            JsonNode root = objectMapper.readTree(jsonConfig);
+            AccountStatusMapping mapping = objectMapper.treeToValue(
+                    root.get("account-status-mapping"), AccountStatusMapping.class);
+            if (mapping == null) {
+                throw new TransformationException("Failed to parse account-status-mapping from YAML configuration");
             }
-
-            // if this item matches target account, store and stop scanning further
-            if (!foundMatchItem && targetAcct != null && targetAcct.equals(thisPrn) && chosenCin != null) {
-              matchCin = chosenCin; matchSuffix = chosenSuffix; foundMatchItem = true;
-              // we can break out of the data[] loop by skipping remaining elements
-              // but Jackson streaming requires consuming the array properly; so just continue
-            }
-          } // end while items
-          break; // done with data[]
+            log.info("Loaded account status mapping from YAML configuration");
+            return mapping;
+        } catch (Exception e) {
+            log.error("Failed to load account status mapping from YAML", e);
+            throw new TransformationException("Failed to load account status mapping from YAML", e);
         }
-      }
     }
 
-    // choose best available
-    String outCin = (matchCin != null ? matchCin : fallbackCin);
-    String outSuffix = (matchSuffix != null ? matchSuffix : fallbackSuffix);
-
-    // Only write if we actually found a holder with a CIN
-    if (sawAnyHolder && outCin != null && !outCin.isEmpty()) {
-      g.writeStartObject();
-      g.writeFieldName("customerInfo");
-      g.writeStartObject();
-      g.writeStringField("cin", outCin);
-      if (outSuffix != null && !outSuffix.isEmpty()) {
-        g.writeStringField("cinSuffix", outSuffix);
-      }
-      g.writeEndObject();
-      g.writeEndObject();
+    @Override
+    public void reloadConfiguration() {
+        loadAccountStatusMapping();
     }
-  }
 }
+
+
+
+///////////////////
+package com.dbs.cb.gapi.core.service.impl;
+
+import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
+import com.dbs.cb.gapi.core.exception.TransformationException;
+import com.dbs.cb.gapi.core.model.AccountStatusMapping;
+import com.dbs.cb.gapi.core.repository.AccountStatusMappingRepository;
+import com.dbs.cb.gapi.core.service.AccountStatusMappingService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
+public class AccountStatusMappingServiceDbImpl implements AccountStatusMappingService {
+
+    private final ObjectMapper objectMapper;
+    private final AccountStatusMappingRepository repository;
+
+    @Override
+    public AccountStatusMapping loadAccountStatusMapping() {
+        try {
+            AccountStatusMappingEntity entity = repository
+                    .findByConfigKeyAndIsActiveTrue("account-status-mapping")
+                    .orElseThrow(() -> new TransformationException(
+                            "Account status mapping not found in database with key 'account-status-mapping'"));
+
+            JsonNode root = objectMapper.readTree(entity.getConfigValue());
+            AccountStatusMapping mapping = objectMapper.treeToValue(
+                    root.get("account-status-mapping"), AccountStatusMapping.class);
+
+            if (mapping == null) {
+                throw new TransformationException("Failed to parse account-status-mapping from database configuration");
+            }
+            log.info("Loaded account status mapping from database");
+            return mapping;
+        } catch (Exception e) {
+            log.error("Failed to load account status mapping from database", e);
+            throw new TransformationException("Failed to load account status mapping from database", e);
+        }
+    }
+
+    @Override
+    public void reloadConfiguration() {
+        loadAccountStatusMapping();
+    }
+}
+
+///////////////////////////
+
+package com.dbs.cb.gapi.core.repository;
+
+import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
