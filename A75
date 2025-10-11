@@ -182,3 +182,20 @@ public class AccountStatusDbAutoConfiguration {
 }
 
 
+@Configuration
+class MongoManualConfig {
+  @Bean
+  com.mongodb.client.MongoClient mongoClient(
+      @Value("${spring.data.mongodb.uri}") String uri) {
+    return com.mongodb.client.MongoClients.create(uri);
+  }
+
+  @Bean
+  org.springframework.data.mongodb.core.MongoTemplate mongoTemplate(
+      com.mongodb.client.MongoClient client,
+      @Value("${spring.data.mongodb.database}") String db) {
+    return new org.springframework.data.mongodb.core.MongoTemplate(client, db);
+  }
+}
+
+
