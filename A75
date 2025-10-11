@@ -162,3 +162,23 @@ public class AccountStatusMappingServiceDbImpl implements AccountStatusMappingSe
     }
 }
 
+
+
+// src/main/java/com/dbs/cb/gapi/core/config/AccountStatusDbAutoConfiguration.java
+package com.dbs.cb.gapi.core.config;
+
+import com.dbs.cb.gapi.core.repository.AccountStatusMappingRepository;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.mongodb.repository.config.EnableMongoRepositories;
+// (Optional) enable auditing if you used @CreatedDate/@LastModifiedDate in the document
+// import org.springframework.data.mongodb.config.EnableMongoAuditing;
+
+@Configuration
+@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
+@EnableMongoRepositories(basePackageClasses = AccountStatusMappingRepository.class)
+// @EnableMongoAuditing // <- uncomment if you want auditing timestamps
+public class AccountStatusDbAutoConfiguration {
+}
+
+
