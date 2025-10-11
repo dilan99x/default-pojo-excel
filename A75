@@ -39,3 +39,126 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 @EntityScan(basePackageClasses = AccountStatusMappingEntity.class)
 public class AccountStatusDbAutoConfiguration {
 }
+
+
+
+// src/main/java/com/dbs/cb/gapi/core/entity/AccountStatusMappingEntity.java
+package com.dbs.cb.gapi.core.entity;
+
+import lombok.Getter;
+import lombok.Setter;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.Indexed;
+import org.springframework.data.mongodb.core.mapping.Document;
+
+import java.time.LocalDateTime;
+
+@Getter
+@Setter
+@Document(collection = "account_status_mapping")
+@CompoundIndex(name = "uk_configKey_active", def = "{'configKey': 1, 'isActive': 1}")
+public class AccountStatusMappingEntity {
+
+    @Id
+    private String id;
+
+    @Indexed
+    private String configKey;
+
+    /**
+     * JSON string containing:
+     * {
+     *   "account-status-mapping": { ... }
+     * }
+     */
+    private String configValue;
+
+    private Boolean isActive = true;
+
+    // Optional auditing (enable with @EnableMongoAuditing in any @Configuration)
+    @CreatedDate
+    private LocalDateTime createdDate;
+
+    @LastModifiedDate
+    private LocalDateTime updatedDate;
+}
+
+
+/////
+// src/main/java/com/dbs/cb/gapi/core/repository/AccountStatusMappingRepository.java
+package com.dbs.cb.gapi.core.repository;
+
+import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+
+@Repository
+@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
+public interface AccountStatusMappingRepository extends MongoRepository<AccountStatusMappingEntity, String> {
+
+    Optional<AccountStatusMappingEntity> findByConfigKeyAndIsActiveTrue(String configKey);
+}
+
+//////
+// src/main/java/com/dbs/cb/gapi/core/service/impl/AccountStatusMappingServiceDbImpl.java
+package com.dbs.cb.gapi.core.service.impl;
+
+import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
+import com.dbs.cb.gapi.core.exception.TransformationException;
+import com.dbs.cb.gapi.core.model.AccountStatusMapping;
+import com.dbs.cb.gapi.core.repository.AccountStatusMappingRepository;
+import com.dbs.cb.gapi.core.service.AccountStatusMappingService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
+public class AccountStatusMappingServiceDbImpl implements AccountStatusMappingService {
+
+    private final ObjectMapper objectMapper;
+    private final AccountStatusMappingRepository repository;
+
+    @Override
+    public AccountStatusMapping loadAccountStatusMapping() {
+        try {
+            AccountStatusMappingEntity entity = repository
+                    .findByConfigKeyAndIsActiveTrue("account-status-mapping")
+                    .orElseThrow(() -> new TransformationException(
+                            "Account status mapping not found in MongoDB with key 'account-status-mapping'"));
+
+            JsonNode root = objectMapper.readTree(entity.getConfigValue());
+            AccountStatusMapping mapping = objectMapper.treeToValue(
+                    root.get("account-status-mapping"), AccountStatusMapping.class);
+
+            if (mapping == null) {
+                throw new TransformationException(
+                        "Failed to parse 'account-status-mapping' from MongoDB configuration");
+            }
+
+            log.info("Loaded account status mapping from MongoDB");
+            return mapping;
+
+        } catch (Exception e) {
+            log.error("Failed to load account status mapping from MongoDB", e);
+            throw new TransformationException("Failed to load account status mapping from MongoDB", e);
+        }
+    }
+
+    @Override
+    public void reloadConfiguration() {
+        loadAccountStatusMapping();
+    }
+}
+
