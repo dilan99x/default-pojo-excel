@@ -1,201 +1,106 @@
-package com.dbs.cb.gapi.core.repository;
+package com.dbs.c2e.mstd.routing;
 
-import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.context.annotation.Lazy;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
-import org.springframework.stereotype.Repository;
-
-import java.util.Optional;
-
-@Repository
-@Lazy
-@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
-public interface AccountStatusMappingRepository extends JpaRepository<AccountStatusMappingEntity, Long> {
-
-    @Query("SELECT e FROM AccountStatusMappingEntity e WHERE e.configKey = :configKey AND e.isActive = true")
-    Optional<AccountStatusMappingEntity> findByConfigKeyAndIsActiveTrue(@Param("configKey") String configKey);
-
-    @Query("SELECT e FROM AccountStatusMappingEntity e WHERE e.configKey = :configKey")
-    Optional<AccountStatusMappingEntity> findByConfigKey(@Param("configKey") String configKey);
-}
-
-
-
-package com.dbs.cb.gapi.core.config;
-
-import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
-import com.dbs.cb.gapi.core.repository.AccountStatusMappingRepository;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.autoconfigure.domain.EntityScan;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
-
-@Configuration
-@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
-@EnableJpaRepositories(basePackageClasses = AccountStatusMappingRepository.class)
-@EntityScan(basePackageClasses = AccountStatusMappingEntity.class)
-public class AccountStatusDbAutoConfiguration {
-}
-
-
-
-// src/main/java/com/dbs/cb/gapi/core/entity/AccountStatusMappingEntity.java
-package com.dbs.cb.gapi.core.entity;
-
-import lombok.Getter;
-import lombok.Setter;
-import org.springframework.data.annotation.CreatedDate;
-import org.springframework.data.annotation.Id;
-import org.springframework.data.annotation.LastModifiedDate;
-import org.springframework.data.mongodb.core.index.CompoundIndex;
-import org.springframework.data.mongodb.core.index.Indexed;
-import org.springframework.data.mongodb.core.mapping.Document;
-
-import java.time.LocalDateTime;
-
-@Getter
-@Setter
-@Document(collection = "account_status_mapping")
-@CompoundIndex(name = "uk_configKey_active", def = "{'configKey': 1, 'isActive': 1}")
-public class AccountStatusMappingEntity {
-
-    @Id
-    private String id;
-
-    @Indexed
-    private String configKey;
-
-    /**
-     * JSON string containing:
-     * {
-     *   "account-status-mapping": { ... }
-     * }
-     */
-    private String configValue;
-
-    private Boolean isActive = true;
-
-    // Optional auditing (enable with @EnableMongoAuditing in any @Configuration)
-    @CreatedDate
-    private LocalDateTime createdDate;
-
-    @LastModifiedDate
-    private LocalDateTime updatedDate;
-}
-
-
-/////
-// src/main/java/com/dbs/cb/gapi/core/repository/AccountStatusMappingRepository.java
-package com.dbs.cb.gapi.core.repository;
-
-import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.data.mongodb.repository.MongoRepository;
-import org.springframework.stereotype.Repository;
-
-import java.util.Optional;
-
-@Repository
-@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
-public interface AccountStatusMappingRepository extends MongoRepository<AccountStatusMappingEntity, String> {
-
-    Optional<AccountStatusMappingEntity> findByConfigKeyAndIsActiveTrue(String configKey);
-}
-
-//////
-// src/main/java/com/dbs/cb/gapi/core/service/impl/AccountStatusMappingServiceDbImpl.java
-package com.dbs.cb.gapi.core.service.impl;
-
-import com.dbs.cb.gapi.core.entity.AccountStatusMappingEntity;
-import com.dbs.cb.gapi.core.exception.TransformationException;
-import com.dbs.cb.gapi.core.model.AccountStatusMapping;
-import com.dbs.cb.gapi.core.repository.AccountStatusMappingRepository;
-import com.dbs.cb.gapi.core.service.AccountStatusMappingService;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.dbs.c2e.mstd.config.GapiOrchestrator;
+import com.dbs.c2e.mstd.util.GapiRouterUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Service;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.server.ServletServerHttpRequest;
+import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
+import org.springframework.web.servlet.HandlerInterceptor;
 
-@Service
-@RequiredArgsConstructor
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+
+@Component
 @Slf4j
-@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
-public class AccountStatusMappingServiceDbImpl implements AccountStatusMappingService {
+@RequiredArgsConstructor
+public class RoutingHeaderInterceptor implements HandlerInterceptor {
 
-    private final ObjectMapper objectMapper;
-    private final AccountStatusMappingRepository repository;
+    private final GapiRouterUtils routerUtils;
+    private final GapiOrchestrator orchestrator;
+    private final AntPathMatcher pathMatcher = new AntPathMatcher();
 
     @Override
-    public AccountStatusMapping loadAccountStatusMapping() {
-        try {
-            AccountStatusMappingEntity entity = repository
-                    .findByConfigKeyAndIsActiveTrue("account-status-mapping")
-                    .orElseThrow(() -> new TransformationException(
-                            "Account status mapping not found in MongoDB with key 'account-status-mapping'"));
+    public boolean preHandle(HttpServletRequest req, HttpServletResponse res, Object handler) {
 
-            JsonNode root = objectMapper.readTree(entity.getConfigValue());
-            AccountStatusMapping mapping = objectMapper.treeToValue(
-                    root.get("account-status-mapping"), AccountStatusMapping.class);
+        // Resolve API config key for this request
+        String uri = req.getRequestURI();
+        String apiConfig = resolveApiConfig(uri);
 
-            if (mapping == null) {
-                throw new TransformationException(
-                        "Failed to parse 'account-status-mapping' from MongoDB configuration");
-            }
-
-            log.info("Loaded account status mapping from MongoDB");
-            return mapping;
-
-        } catch (Exception e) {
-            log.error("Failed to load account status mapping from MongoDB", e);
-            throw new TransformationException("Failed to load account status mapping from MongoDB", e);
+        // Fallback to URI if not found (optional)
+        if (apiConfig == null) {
+            apiConfig = uri;
         }
+
+        // Extract headers
+        HttpHeaders headers = new ServletServerHttpRequest(req).getHeaders();
+
+        // This will ALWAYS print routing headers, and only validate when enabled
+        routerUtils.checkRoutingHeaders(apiConfig, headers);
+
+        return true;
     }
+
+    private String resolveApiConfig(String uri) {
+        return orchestrator.getApiList().keySet().stream()
+                .filter(pattern -> pathMatcher.match(pattern, uri))
+                .findFirst()
+                .orElse(null);
+    }
+}
+
+
+
+
+
+package com.dbs.c2e.mstd.routing;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+@Configuration
+@RequiredArgsConstructor
+public class WebMvcConfig implements WebMvcConfigurer {
+
+    private final RoutingHeaderInterceptor routingHeaderInterceptor;
 
     @Override
-    public void reloadConfiguration() {
-        loadAccountStatusMapping();
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(routingHeaderInterceptor)
+                .addPathPatterns("/**")                 // apply to all APIs
+                .excludePathPatterns("/actuator/**",    // optional excludes
+                                     "/health",
+                                     "/error");
     }
 }
 
 
 
-// src/main/java/com/dbs/cb/gapi/core/config/AccountStatusDbAutoConfiguration.java
-package com.dbs.cb.gapi.core.config;
 
-import com.dbs.cb.gapi.core.repository.AccountStatusMappingRepository;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.data.mongodb.repository.config.EnableMongoRepositories;
-// (Optional) enable auditing if you used @CreatedDate/@LastModifiedDate in the document
-// import org.springframework.data.mongodb.config.EnableMongoAuditing;
-
-@Configuration
-@ConditionalOnProperty(prefix = "config", name = "loading-source", havingValue = "database")
-@EnableMongoRepositories(basePackageClasses = AccountStatusMappingRepository.class)
-// @EnableMongoAuditing // <- uncomment if you want auditing timestamps
-public class AccountStatusDbAutoConfiguration {
-}
+apiList:
+   /api/v1/foo:
+       routing-headers-enabled: true
+   /api/v1/bar:
+       routing-headers-enabled: false
 
 
-@Configuration
-class MongoManualConfig {
-  @Bean
-  com.mongodb.client.MongoClient mongoClient(
-      @Value("${spring.data.mongodb.uri}") String uri) {
-    return com.mongodb.client.MongoClients.create(uri);
-  }
 
-  @Bean
-  org.springframework.data.mongodb.core.MongoTemplate mongoTemplate(
-      com.mongodb.client.MongoClient client,
-      @Value("${spring.data.mongodb.database}") String db) {
-    return new org.springframework.data.mongodb.core.MongoTemplate(client, db);
-  }
+@Override
+public boolean preHandle(HttpServletRequest req, HttpServletResponse res, Object handler) {
+    String apiConfig = resolveApiConfig(req.getRequestURI());
+    HttpHeaders headers = new ServletServerHttpRequest(req).getHeaders();
+    try {
+        routerUtils.checkRoutingHeaders(apiConfig, headers); // prints + (maybe) validates
+        return true;
+    } catch (GapiValidationException ex) {
+        // Use your library’s existing error builder
+        ErrorResponse.writeHeaderError(res, ex.getRestApiResponse(), /*status*/400);
+        return false; // stops the request here; controller won’t run
+    }
 }
 
 
