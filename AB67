@@ -1,0 +1,475 @@
+1.
+package com.yourorg.auditkafka.config;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.List;
+import java.util.Set;
+
+@Data
+@ConfigurationProperties(prefix = "audit.kafka")
+public class AuditKafkaProperties {
+
+  /** Master switch */
+  private boolean enabled = true;
+
+  /** Kafka topic to publish the audit event */
+  private String topic = "http.audit.events";
+
+  /** Filter order (relative to other OncePerRequest filters) */
+  private int filterOrder = 2;
+
+  /** Ant-style patterns to skip auditing (health, actuator, etc.) */
+  private List<String> excludePatterns = List.of("/actuator/**");
+
+  /** Include request body in the payload (size-limited) */
+  private boolean includeRequestBody = true;
+
+  /** Include response body in the payload (size-limited) */
+  private boolean includeResponseBody = true;
+
+  /** Maximum number of bytes to capture from bodies */
+  private int maxBodyBytes = 64 * 1024;
+
+  /** Only capture headers starting with these prefixes (case-insensitive) */
+  private Set<String> captureHeaderPrefixes = Set.of("x-");
+
+  /** Header names (prefix match) to always exclude (case-insensitive) */
+  private Set<String> excludeHeaderPrefixes = Set.of("x-forwarded");
+}
+
+
+
+
+2.
+package com.yourorg.auditkafka.model;
+
+import lombok.Data;
+
+import java.time.Instant;
+import java.util.Map;
+
+@Data
+public class HttpAuditEvent {
+  // request side
+  private String method;
+  private String path;
+  private String query;
+  private Map<String, String> headers;     // only X-* and not x-forwarded*
+  private String requestBody;
+
+  // response side
+  private int status;
+  private String responseBody;
+
+  // trace/correlation
+  private String correlationId;            // from MDC or header
+  private String channelId;                // from MDC (if you use it)
+  private String clientId;                 // from MDC (if you use it)
+
+  // timing
+  private Instant timestamp = Instant.now();
+  private long durationMs;
+}
+
+
+
+
+3.
+package com.yourorg.auditkafka.kafka;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yourorg.auditkafka.config.AuditKafkaProperties;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class KafkaPublisherService {
+
+  private final KafkaTemplate<String, String> kafkaTemplate;
+  private final ObjectMapper objectMapper;
+  private final AuditKafkaProperties props;
+
+  /** Fire-and-forget, off the request thread */
+  @Async("auditKafkaExecutor")
+  public void publish(Object payload) {
+    try {
+      String json = objectMapper.writeValueAsString(payload);
+      kafkaTemplate.send(props.getTopic(), json)
+                   .whenComplete((meta, ex) -> {
+                     if (ex != null) {
+                       log.warn("Audit publish failed: {}", ex.toString());
+                     } else if (log.isDebugEnabled()) {
+                       log.debug("Audit published to {}-{}@{}",
+                           meta.topic(), meta.partition(), meta.offset());
+                     }
+                   });
+    } catch (Exception e) {
+      log.warn("Audit serialization failed: {}", e.toString());
+    }
+  }
+}
+
+
+
+
+4.
+
+package com.yourorg.auditkafka.web;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yourorg.auditkafka.config.AuditKafkaProperties;
+import com.yourorg.auditkafka.kafka.KafkaPublisherService;
+import com.yourorg.auditkafka.model.HttpAuditEvent;
+import jakarta.annotation.PostConstruct;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
+import org.springframework.core.annotation.Order;
+import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
+import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.ContentCachingRequestWrapper;
+import org.springframework.web.util.ContentCachingResponseWrapper;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Component
+@Order(2) // will be overridden by FilterRegistrationBean order in auto-config
+@RequiredArgsConstructor
+public class HttpAuditKafkaFilter extends OncePerRequestFilter {
+
+  private final KafkaPublisherService publisher;
+  private final AuditKafkaProperties props;
+  private final ObjectMapper objectMapper;
+
+  private final List<RequestMatcher> excludedMatchers = new ArrayList<>();
+  private final AntPathMatcher ant = new AntPathMatcher();
+
+  @PostConstruct
+  public void init() {
+    for (String pattern : props.getExcludePatterns()) {
+      excludedMatchers.add(request -> ant.match(pattern, request.getRequestURI()));
+    }
+  }
+
+  @Override
+  protected boolean shouldNotFilter(HttpServletRequest request) {
+    return excludedMatchers.stream().anyMatch(m -> m.matches(request));
+  }
+
+  @Override
+  protected void doFilterInternal(
+      HttpServletRequest request,
+      HttpServletResponse response,
+      FilterChain chain) throws ServletException, IOException {
+
+    long start = System.currentTimeMillis();
+
+    ContentCachingRequestWrapper reqWrapper = new ContentCachingRequestWrapper(request);
+    ContentCachingResponseWrapper resWrapper = new ContentCachingResponseWrapper(response);
+
+    chain.doFilter(reqWrapper, resWrapper);
+
+    try {
+      HttpAuditEvent event = new HttpAuditEvent();
+      event.setMethod(request.getMethod());
+      event.setPath(request.getRequestURI());
+      event.setQuery(request.getQueryString());
+
+      // headers: only X-* and not x-forwarded*
+      event.setHeaders(extractXHeaders(request));
+
+      // bodies (size-limited, optional)
+      if (props.isIncludeRequestBody()) {
+        event.setRequestBody(readLimited(reqWrapper.getContentAsByteArray(), props.getMaxBodyBytes()));
+      }
+      if (props.isIncludeResponseBody()) {
+        event.setResponseBody(readLimited(resWrapper.getContentAsByteArray(), props.getMaxBodyBytes()));
+      }
+
+      event.setStatus(resWrapper.getStatus());
+      event.setDurationMs(System.currentTimeMillis() - start);
+
+      // MDC keys – align with your constants (seen in X-3)
+      event.setCorrelationId(MDC.get("X_CORRELATION_ID"));
+      event.setChannelId(MDC.get("CHANNEL_ID"));
+      event.setClientId(MDC.get("UAA_CLIENT_ID"));
+
+      // async publish
+      publisher.publish(event);
+
+      if (log.isTraceEnabled()) {
+        log.trace("AUDIT {}", objectMapper.writeValueAsString(event));
+      }
+    } catch (Exception e) {
+      log.warn("Failed to build/publish audit event: {}", e.toString());
+    } finally {
+      // IMPORTANT: write response body back to client
+      resWrapper.copyBodyToResponse();
+    }
+  }
+
+  private String readLimited(byte[] bytes, int max) {
+    if (bytes == null) return null;
+    if (bytes.length == 0) return "";
+    int len = Math.min(bytes.length, max);
+    String s = new String(bytes, 0, len, StandardCharsets.UTF_8);
+    if (bytes.length > max) s = s + "…<truncated>";
+    return s;
+  }
+
+  /** Mirrors your X-4 logic: capture only x-* except x-forwarded* */
+  private Map<String, String> extractXHeaders(HttpServletRequest request) {
+    Enumeration<String> names = request.getHeaderNames();
+    if (names == null) return Map.of();
+
+    Set<String> capture = props.getCaptureHeaderPrefixes().stream()
+        .map(String::toLowerCase).collect(Collectors.toSet());
+    Set<String> exclude = props.getExcludeHeaderPrefixes().stream()
+        .map(String::toLowerCase).collect(Collectors.toSet());
+
+    return Collections.list(names).stream()
+        .filter(n -> {
+          String ln = n.toLowerCase(Locale.ROOT);
+          boolean okPrefix = capture.stream().anyMatch(ln::startsWith);
+          boolean notExcluded = exclude.stream().noneMatch(ln::startsWith);
+          return okPrefix && notExcluded;
+        })
+        .collect(Collectors.toMap(n -> n, request::getHeader, (a, b) -> a, LinkedHashMap::new));
+  }
+}
+
+
+
+
+
+
+5.
+
+package com.yourorg.auditkafka;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yourorg.auditkafka.config.AuditKafkaProperties;
+import com.yourorg.auditkafka.web.HttpAuditKafkaFilter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
+@AutoConfiguration
+@EnableAsync
+@EnableConfigurationProperties(AuditKafkaProperties.class)
+@ConditionalOnProperty(prefix = "audit.kafka", name = "enabled", havingValue = "true", matchIfMissing = true)
+@RequiredArgsConstructor
+public class AuditKafkaAutoConfiguration {
+
+  @Bean(name = "auditKafkaExecutor")
+  public TaskExecutor auditKafkaExecutor() {
+    ThreadPoolTaskExecutor ex = new ThreadPoolTaskExecutor();
+    ex.setThreadNamePrefix("audit-kafka-");
+    ex.setCorePoolSize(2);
+    ex.setMaxPoolSize(8);
+    ex.setQueueCapacity(1000);
+    ex.initialize();
+    return ex;
+  }
+
+  @Bean
+  public FilterRegistrationBean<HttpAuditKafkaFilter> httpAuditKafkaFilter(HttpAuditKafkaFilter filter,
+                                                                          AuditKafkaProperties props,
+                                                                          ObjectMapper objectMapper) {
+    FilterRegistrationBean<HttpAuditKafkaFilter> reg = new FilterRegistrationBean<>();
+    reg.setFilter(filter);
+    reg.setOrder(props.getFilterOrder());
+    reg.setName("httpAuditKafkaFilter");
+    reg.addUrlPatterns("/*");
+    return reg;
+  }
+}
+
+
+
+6.
+
+audit:
+  kafka:
+    enabled: true
+    topic: gapi.audit.logs
+    filter-order: 2
+    exclude-patterns:
+      - /actuator/**
+      - /health/**
+    include-request-body: true
+    include-response-body: true
+    max-body-bytes: 65536
+
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+
+
+7.
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.yourorg</groupId>
+  <artifactId>http-audit-kafka-spring-boot-starter</artifactId>
+  <version>1.0.0</version>
+  <name>HTTP Audit to Kafka Spring Boot Starter</name>
+  <description>Filter that captures HTTP req/resp and publishes audit events to Kafka asynchronously</description>
+  <packaging>jar</packaging>
+
+  <properties>
+    <java.version>21</java.version>
+    <spring-boot.version>3.3.4</spring-boot.version>
+  </properties>
+
+  <!-- Use Spring Boot BOM for consistent dependency versions -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- Core autoconfigure support for starters -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-autoconfigure</artifactId>
+    </dependency>
+
+    <!-- Web & JSON (for wrappers + ObjectMapper) -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-json</artifactId>
+    </dependency>
+
+    <!-- Kafka -->
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+    </dependency>
+
+    <!-- Optional: if you use Spring Security's RequestMatcher imports -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-web</artifactId>
+      <optional>true</optional>
+    </dependency>
+
+    <!-- Lombok (optional for consumers; used to build this lib) -->
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>1.18.34</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Compile with Java 21 and set annotation processors -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>${java.version}</release>
+          <parameters>true</parameters>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+              <version>1.18.34</version>
+            </path>
+            <!-- Generates configuration metadata for your @ConfigurationProperties -->
+            <path>
+              <groupId>org.springframework.boot</groupId>
+              <artifactId>spring-boot-configuration-processor</artifactId>
+              <version>${spring-boot.version}</version>
+            </path>
+            <!-- Generates auto-configuration metadata for starters -->
+            <path>
+              <groupId>org.springframework.boot</groupId>
+              <artifactId>spring-boot-autoconfigure-processor</artifactId>
+              <version>${spring-boot.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+
+      <!-- Optional: attach sources/javadoc for nicer consumption -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <version>3.3.0</version>
+        <executions>
+          <execution>
+            <id>attach-sources</id>
+            <goals><goal>jar</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <version>3.7.0</version>
+        <executions>
+          <execution>
+            <id>attach-javadocs</id>
+            <goals><goal>jar</goal></goals>
+            <configuration><failOnError>false</failOnError></configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+  <developers>
+    <developer>
+      <name>Your Team</name>
+      <organization>YourOrg</organization>
+    </developer>
+  </developers>
+
+</project>
