@@ -590,3 +590,4 @@ public class AuditKafkaAutoConfiguration {
 }
 
 
+org.springframework.boot.autoconfigure.AutoConfiguration.imports
