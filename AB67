@@ -473,3 +473,29 @@ spring:
   </developers>
 
 </project>
+
+
+import org.springframework.web.util.pattern.PathPattern;
+import org.springframework.web.util.pattern.PathPatternParser;
+
+private final List<PathPattern> excludePatterns = new ArrayList<>();
+private final PathPatternParser patternParser = new PathPatternParser();
+
+@PostConstruct
+public void init() {
+    for (String pattern : props.getExcludePatterns()) {
+        excludePatterns.add(patternParser.parse(pattern));
+    }
+}
+
+@Override
+protected boolean shouldNotFilter(HttpServletRequest request) {
+    String path = request.getRequestURI();
+    for (PathPattern pattern : excludePatterns) {
+        if (pattern.matches(PathPatternParser.defaultInstance.parse(path))) {
+            return true;
+        }
+    }
+    return false;
+}
+
