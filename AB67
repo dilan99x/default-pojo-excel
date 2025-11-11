@@ -591,3 +591,6 @@ public class AuditKafkaAutoConfiguration {
 
 
 org.springframework.boot.autoconfigure.AutoConfiguration.imports
+
+
+org.springframework.kafka.support.serializer.JsonSerializer
