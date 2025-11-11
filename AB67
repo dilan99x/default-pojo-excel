@@ -607,3 +607,15 @@ spring:
         security.protocol: SSL
         compression-type: lz4
 
+
+
+
+
+@PostConstruct
+public void init() {
+  var patterns = props.getExcludePatterns();
+  if (patterns != null) {
+    for (String p : patterns) excludePatterns.add(patternParser.parse(p));
+  }
+}
+
