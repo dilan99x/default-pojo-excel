@@ -590,7 +590,20 @@ public class AuditKafkaAutoConfiguration {
 }
 
 
-org.springframework.boot.autoconfigure.AutoConfiguration.imports
+# application-kafka.yml
+spring:
+  kafka:
+    bootstrap-servers: ${kafka.bootstrap.servers}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false   # optional; reduces header bloat
+        spring.json.value.default.type: com.dbs.c2e.audit.model.GapiAuditEvent
+        ssl.truststore.location: ${producer.truststore.location}
+        ssl.truststore.password: ${kafka.ssl.truststore.password}
+        ssl.keystore.location: ${producer.keystore.location}
+        ssl.keystore.password: ${kafka.ssl.keystore.password}
+        security.protocol: SSL
+        compression-type: lz4
 
-
-org.springframework.kafka.support.serializer.JsonSerializer
