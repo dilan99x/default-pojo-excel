@@ -543,3 +543,50 @@ public class AuditKafkaAutoConfiguration {
 }
 
 
+
+
+
+
+
+
+
+@AutoConfiguration
+@EnableAsync
+@EnableConfigurationProperties(AuditKafkaProperties.class)
+@ConditionalOnProperty(prefix = "audit.kafka", name = "enabled", havingValue = "true", matchIfMissing = true)
+public class AuditKafkaAutoConfiguration {
+
+  @Bean(name = "auditKafkaExecutor")
+  public TaskExecutor auditKafkaExecutor() {
+    var ex = new ThreadPoolTaskExecutor();
+    ex.setThreadNamePrefix("audit-kafka-");
+    ex.setCorePoolSize(2);
+    ex.setMaxPoolSize(8);
+    ex.setQueueCapacity(10_000);
+    ex.initialize();
+    return ex;
+  }
+
+  // create the filter bean (no @Component on the class)
+  @Bean
+  public HttpAuditKafkaFilter httpAuditKafkaFilter(
+      AuditKafkaProperties props,
+      KafkaPublisherService publisher,
+      ObjectMapper objectMapper) {
+    return new HttpAuditKafkaFilter(props, publisher, objectMapper);
+  }
+
+  // register & control order/patterns
+  @Bean
+  public FilterRegistrationBean<HttpAuditKafkaFilter> httpAuditKafkaFilterRegistration(
+      HttpAuditKafkaFilter filter, AuditKafkaProperties props) {
+    var reg = new FilterRegistrationBean<>(filter);
+    reg.setOrder(props.getFilterOrder());
+    reg.addUrlPatterns("/*");       // or leave empty and rely on shouldNotFilter()
+    reg.setName("httpAuditKafkaFilter");
+    reg.setAsyncSupported(true);
+    return reg;
+  }
+}
+
+
