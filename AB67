@@ -619,3 +619,26 @@ public void init() {
   }
 }
 
+
+
+
+
+@AutoConfiguration
+@EnableAsync
+@EnableConfigurationProperties(AuditKafkaProperties.class)
+@ConditionalOnProperty(prefix = "audit.kafka", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnClass(org.springframework.kafka.core.KafkaTemplate.class)
+public class AuditKafkaAutoConfiguration {
+
+  @Bean(name = "auditKafkaExecutor")
+  @ConditionalOnMissingBean(name = "auditKafkaExecutor")
+  public TaskExecutor auditKafkaExecutor() { ... }
+
+  @Bean
+  @ConditionalOnMissingBean(AuditLogExtractionFilter.class)
+  public AuditLogExtractionFilter httpAuditKafkaFilter(...){ ... }
+
+  @Bean
+  @ConditionalOnMissingBean(name = "httpAuditKafkaFilterRegistration")
+  public FilterRegistrationBean<AuditLogExtractionFilter> httpAuditKafkaFilterRegistration(...){ ... }
+}
