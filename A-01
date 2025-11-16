@@ -1,0 +1,125 @@
+gapi-orchestrator:
+  loadMongoService: ${loadMongoService}
+  productIntegrationService: ${productIntegrationService:mainframe}
+  isSubErrorDetailsEnabled: ${isSubErrorDetailsEnabled:true}
+  routingHeaders: ${earmark.routing-header-fields}
+
+  api-list:
+    get-earmark-txn-status-config:
+      mainframe: ${get-earmark-txn-status.mainframe.url}
+      dqStandin: ${get-earmark-txn-status.dqStandin.url}
+      caStandin: ${get-earmark-txn-status.caStandin.url}
+      anStandin: ${get-earmark-txn-status.anStandin.url}
+      standin-eligibility-flag: ${get-earmark-txn-status.standin.eligibility}
+
+    get-earmark-txn-status-v3-config:
+      mainframe: ${get-earmark-txn-status-v3.mainframe.url}
+      dqStandin: ${get-earmark-txn-status-v3.dqStandin.url}
+      caStandin: ${get-earmark-txn-status-v3.caStandin.url}
+      anStandin: ${get-earmark-txn-status-v3.anStandin.url}
+      standin-eligibility-flag: ${get-earmark-txn-status-v3.standin.eligibility}
+      routing-header-enabled: ${get-earmark-txn-status-v3.routing-header.enabled}
+
+  # 🔽 NEW: map endpoints to api-list keys
+  endpoint-to-config:
+    /v3/earmark/txn-status: get-earmark-txn-status-v3-config
+    /earmark/txn-status: get-earmark-txn-status-config
+    # add more endpoints as needed
+
+
+
+@Configuration
+@ConfigurationProperties(prefix = "gapi-orchestrator")
+@Data
+public class GapiOrchestrator {
+
+    private String loadMongoService;
+    private String productIntegrationService;
+    private boolean isSubErrorDetailsEnabled;
+
+    private List<String> routingHeaders;
+
+    // existing: apiList, productCodeMapping, etc.
+    private Map<String, Map<String, String>> apiList;
+
+    // 🔽 NEW
+    private Map<String, String> endpointToConfig = new HashMap<>();
+
+    public String resolveApiConfigForPath(String requestPath) {
+        if (endpointToConfig == null || endpointToConfig.isEmpty()) {
+            return null;
+        }
+        // simplest: exact match
+        return endpointToConfig.get(requestPath);
+    }
+}
+
+
+
+package com.dbs.c2e.mstd.routing;
+
+import com.dbs.c2e.mstd.config.GapiOrchestrator;
+import com.dbs.c2e.mstd.util.GapiRouterUtils;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpHeaders;
+import org.springframework.web.servlet.HandlerInterceptor;
+
+@Slf4j
+@RequiredArgsConstructor
+public class RoutingHeaderInterceptor implements HandlerInterceptor {
+
+    private final GapiRouterUtils gapiRouterUtils;
+    private final GapiOrchestrator gapiOrchestrator;
+
+    @Override
+    public boolean preHandle(HttpServletRequest request,
+                             HttpServletResponse response,
+                             Object handler) throws Exception {
+
+        String path = request.getRequestURI();        // e.g. /v3/earmark/txn-status
+        String apiConfig = gapiOrchestrator.resolveApiConfigForPath(path);
+
+        if (apiConfig == null) {
+            // No mapping → no routing-header validation/logging for this endpoint
+            return true;
+        }
+
+        HttpHeaders httpHeaders = extractHeaders(request);
+
+        // This method already:
+        //  - logs all routing headers (always)
+        //  - validates only if routing-header-enabled=true for this apiConfig
+        gapiRouterUtils.checkRoutingHeaders(apiConfig, httpHeaders);
+
+        return true; // continue to controller if no exception
+    }
+
+    private HttpHeaders extractHeaders(HttpServletRequest request) {
+        HttpHeaders headers = new HttpHeaders();
+        // Only care about configured routing headers
+        for (String headerName : gapiOrchestrator.getRoutingHeaders()) {
+            String value = request.getHeader(headerName);
+            headers.add(headerName, value);
+        }
+        return headers;
+    }
+}
+
+
+
+@Configuration
+@RequiredArgsConstructor
+public class WebMvcConfig implements WebMvcConfigurer {
+
+    private final GapiRouterUtils gapiRouterUtils;
+    private final GapiOrchestrator gapiOrchestrator;
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(new RoutingHeaderInterceptor(gapiRouterUtils, gapiOrchestrator))
+                .addPathPatterns("/**");
+    }
+}
