@@ -1,0 +1,405 @@
+
+
+{
+  "_id": { "$oid": "674f12abc1234567890def12" },
+  "correlationId": "abc-123-def-456",
+  "accountNumber": "9876543210",
+  "status": "SUCCESS",
+  "sourceSystem": "NCBS",
+  "targetSystem": "GL_GEN",
+  "createdAt": { "$date": "2023-10-27T09:55:10Z" },
+  "updatedAt": { "$date": "2023-10-27T09:55:12Z" },
+
+  "errorCode": null,
+  "errorMessage": null,
+
+  "extraAttributes": {
+    "currency": "SGD",
+    "amount": 1500.75
+  }
+}
+
+
+public enum TransactionStatus {
+    SUCCESS,
+    FAILED,
+    PENDING
+}
+
+public enum SourceSystem {
+    NCBS,
+    GL_GEN,
+    OTHER
+}
+
+public enum TargetSystem {
+    NCBS,
+    GL_GEN,
+    SAP,
+    MF
+}
+
+
+
+package com.yourorg.events.model;
+
+import lombok.*;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
+import org.springframework.data.mongodb.core.index.Indexed;
+import org.springframework.data.mongodb.core.mapping.Document;
+
+import java.time.Instant;
+import java.util.Map;
+
+@Document(collection = "transaction_posting_events")
+@CompoundIndexes({
+        @CompoundIndex(
+                name = "acct_status_created_idx",
+                def = "{ 'accountNumber': 1, 'status': 1, 'createdAt': -1 }"
+        )
+})
+@Getter
+@Setter
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class TransactionPostingEvent {
+
+    @Id
+    private String id;                 // Mongo _id (ObjectId as string is fine)
+
+    @Indexed(unique = true)
+    private String correlationId;      // shown in grid + filter
+
+    @Indexed
+    private String accountNumber;      // shown in grid + filter
+
+    @Indexed
+    private TransactionStatus status;  // SUCCESS / FAILED / PENDING (enum below)
+
+    private SourceSystem sourceSystem; // shown in grid
+    private TargetSystem targetSystem; // shown in grid, hidden in filter popup
+
+    @CreatedDate
+    @Indexed
+    private Instant createdAt;         // shown in grid + filter (date range)
+
+    @LastModifiedDate
+    private Instant updatedAt;         // shown in grid
+
+    // Optional – useful for failed events
+    private String errorCode;
+    private String errorMessage;
+
+    // Free-form extension (amount, currency, etc.)
+    private Map<String, Object> extraAttributes;
+}
+
+
+
+package com.yourorg.events.controller;
+
+import com.yourorg.events.dto.EventSearchRequest;
+import com.yourorg.events.dto.EventSearchResponse;
+import com.yourorg.events.model.TransactionPostingEvent;
+import com.yourorg.events.service.TransactionPostingEventService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/v1/transaction-events")
+@RequiredArgsConstructor
+public class TransactionPostingEventController {
+
+    private final TransactionPostingEventService service;
+
+    @PostMapping("/search")
+    public EventSearchResponse searchEvents(@RequestBody EventSearchRequest req) {
+
+        PageRequest pageable = PageRequest.of(req.getPage(), req.getSize());
+
+        Page<TransactionPostingEvent> page = service.searchEvents(
+                req.getCorrelationId(),
+                req.getAccountNumber(),
+                req.getStatus(),
+                req.getFromDate(),
+                req.getToDate(),
+                pageable
+        );
+
+        return EventSearchResponse.builder()
+                .totalEvents(service.getTotalEvents())
+                .successfulEvents(service.getSuccessfulEvents())
+                .failedEvents(service.getFailedEvents())
+                .pageData(page)
+                .build();
+    }
+}
+
+
+
+
+{
+  "totalEvents": 320,
+  "successfulEvents": 290,
+  "failedEvents": 30,
+  "pageData": {
+    "content": [
+      {
+        "id": "674f12abc1234567890def12",
+        "correlationId": "abc-123-def-456",
+        "accountNumber": "9876543210",
+        "status": "SUCCESS",
+        "sourceSystem": "NCBS",
+        "targetSystem": "GL_GEN",
+        "createdAt": "2023-10-27T09:55:10Z",
+        "updatedAt": "2023-10-27T09:55:12Z"
+      }
+    ],
+    "pageable": { ... },
+    "totalPages": 32,
+    "totalElements": 320,
+    "number": 0,
+    "size": 10
+  }
+}
+
+
+package com.yourorg.events.dto;
+
+import com.yourorg.events.model.TransactionPostingEvent;
+import lombok.Builder;
+import lombok.Data;
+import org.springframework.data.domain.Page;
+
+@Data
+@Builder
+public class EventSearchResponse {
+
+    private long totalEvents;
+    private long successfulEvents;
+    private long failedEvents;
+
+    private Page<TransactionPostingEvent> pageData;
+}
+
+
+package com.yourorg.events.dto;
+
+import com.yourorg.events.model.TransactionStatus;
+import lombok.Data;
+
+import java.time.Instant;
+
+@Data
+public class EventSearchRequest {
+
+    private String correlationId;
+    private String accountNumber;
+    private TransactionStatus status;
+
+    private Instant fromDate;  // optional
+    private Instant toDate;    // optional
+
+    private int page = 0;
+    private int size = 10;
+}
+
+
+package com.yourorg.events.service;
+
+import com.yourorg.events.model.TransactionPostingEvent;
+import com.yourorg.events.model.TransactionStatus;
+import com.yourorg.events.repository.TransactionPostingEventRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+
+@Service
+@RequiredArgsConstructor
+public class TransactionPostingEventServiceImpl implements TransactionPostingEventService {
+
+    private final TransactionPostingEventRepository repository;
+
+    @Override
+    public Page<TransactionPostingEvent> searchEvents(
+            String correlationId,
+            String accountNumber,
+            TransactionStatus status,
+            Instant fromDate,
+            Instant toDate,
+            Pageable pageable
+    ) {
+        return repository.searchEvents(
+                correlationId,
+                accountNumber,
+                status,
+                fromDate,
+                toDate,
+                pageable
+        );
+    }
+
+    @Override
+    public long getTotalEvents() {
+        return repository.count();
+    }
+
+    @Override
+    public long getSuccessfulEvents() {
+        return repository.countByStatus(TransactionStatus.SUCCESS);
+    }
+
+    @Override
+    public long getFailedEvents() {
+        return repository.countByStatus(TransactionStatus.FAILED);
+    }
+}
+
+
+package com.yourorg.events.service;
+
+import com.yourorg.events.model.TransactionPostingEvent;
+import com.yourorg.events.model.TransactionStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
+import java.time.Instant;
+
+public interface TransactionPostingEventService {
+
+    Page<TransactionPostingEvent> searchEvents(
+            String correlationId,
+            String accountNumber,
+            TransactionStatus status,
+            Instant fromDate,
+            Instant toDate,
+            Pageable pageable
+    );
+
+    long getTotalEvents();
+
+    long getSuccessfulEvents();
+
+    long getFailedEvents();
+}
+
+
+package com.yourorg.events.repository;
+
+import com.yourorg.events.model.TransactionPostingEvent;
+import com.yourorg.events.model.TransactionStatus;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.stereotype.Repository;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+
+@Repository
+@RequiredArgsConstructor
+public class TransactionPostingEventCustomRepositoryImpl implements TransactionPostingEventCustomRepository {
+
+    private final MongoTemplate mongoTemplate;
+
+    @Override
+    public Page<TransactionPostingEvent> searchEvents(
+            String correlationId,
+            String accountNumber,
+            TransactionStatus status,
+            Instant fromDate,
+            Instant toDate,
+            Pageable pageable
+    ) {
+
+        Query query = new Query();
+        List<Criteria> criteriaList = new ArrayList<>();
+
+        if (correlationId != null && !correlationId.isEmpty()) {
+            criteriaList.add(Criteria.where("correlationId").is(correlationId));
+        }
+
+        if (accountNumber != null && !accountNumber.isEmpty()) {
+            criteriaList.add(Criteria.where("accountNumber").is(accountNumber));
+        }
+
+        if (status != null) {
+            criteriaList.add(Criteria.where("status").is(status));
+        }
+
+        if (fromDate != null && toDate != null) {
+            criteriaList.add(Criteria.where("createdAt").gte(fromDate).lte(toDate));
+        }
+
+        if (!criteriaList.isEmpty()) {
+            query.addCriteria(new Criteria().andOperator(criteriaList.toArray(new Criteria[0])));
+        }
+
+        long total = mongoTemplate.count(query, TransactionPostingEvent.class);
+
+        query.with(pageable);
+
+        List<TransactionPostingEvent> list =
+                mongoTemplate.find(query, TransactionPostingEvent.class);
+
+        return new org.springframework.data.domain.PageImpl<>(list, pageable, total);
+    }
+
+    @Override
+    public long countByStatus(TransactionStatus status) {
+        Query query = new Query(Criteria.where("status").is(status));
+        return mongoTemplate.count(query, TransactionPostingEvent.class);
+    }
+}
+
+
+package com.yourorg.events.repository;
+
+import com.yourorg.events.model.TransactionPostingEvent;
+import com.yourorg.events.model.TransactionStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
+import java.time.Instant;
+
+public interface TransactionPostingEventCustomRepository {
+
+    Page<TransactionPostingEvent> searchEvents(
+            String correlationId,
+            String accountNumber,
+            TransactionStatus status,
+            Instant fromDate,
+            Instant toDate,
+            Pageable pageable
+    );
+
+    long countByStatus(TransactionStatus status);
+}
+
+
+package com.yourorg.events.repository;
+
+import com.yourorg.events.model.TransactionPostingEvent;
+import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public interface TransactionPostingEventRepository
+        extends MongoRepository<TransactionPostingEvent, String>, TransactionPostingEventCustomRepository {
+}
+
+
