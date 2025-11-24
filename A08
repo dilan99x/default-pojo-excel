@@ -176,4 +176,44 @@ public class RoutingHeaderWebConfig implements WebMvcConfigurer {
     }
 }
 
+/////////////////
+routing-headers:
+  enabled: true
+  endpoints:
+    - path: /v3/earmark/txn-status
+      validate: true
+      headers:
+        - X-PRODUCT-CODE
+        - X-INTERNAL-ACC-NO
+
+    - path: /v3/earmark/txn-create
+      validate: false
+      headers: []
+
+
+@Data
+@ConfigurationProperties(prefix = "routing-headers")
+public class RoutingHeaderProperties {
+
+    private boolean enabled = true;
+
+    private List<EndpointConfig> endpoints = new ArrayList<>();
+
+    public EndpointConfig getConfigForPath(String path) {
+        if (endpoints == null) return null;
+        return endpoints.stream()
+                .filter(e -> path.equals(e.getPath()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    @Data
+    public static class EndpointConfig {
+        private String path;
+        private boolean validate = true;
+        private List<String> headers = Collections.emptyList();
+    }
+}
+
+
 
