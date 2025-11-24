@@ -1,0 +1,179 @@
+package com.yourorg.routing.config;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@Data
+@ConfigurationProperties(prefix = "routing-headers")
+public class RoutingHeaderProperties {
+
+    /**
+     * Global master switch for routing header validation.
+     */
+    private boolean enabled = true;
+
+    /**
+     * Key: request path (e.g. "/v3/earmark/txn-status").
+     */
+    private Map<String, EndpointConfig> endpoints = new HashMap<>();
+
+    public EndpointConfig getConfigForPath(String path) {
+        if (endpoints == null) return null;
+        return endpoints.get(path);
+    }
+
+    @Data
+    public static class EndpointConfig {
+        /**
+         * If false, this endpoint will NOT be validated even if global enabled = true.
+         */
+        private boolean validate = true;
+
+        /**
+         * Headers to validate for this endpoint.
+         */
+        private List<String> headers = Collections.emptyList();
+    }
+}
+
+
+
+
+
+package com.yourorg.routing.web;
+
+import com.yourorg.routing.config.RoutingHeaderProperties;
+import com.yourorg.routing.config.RoutingHeaderProperties.EndpointConfig;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.util.StringUtils;
+import org.springframework.web.method.HandlerMethod;
+import org.springframework.web.servlet.HandlerInterceptor;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Slf4j
+@RequiredArgsConstructor
+public class RoutingHeaderValidationInterceptor implements HandlerInterceptor {
+
+    private final RoutingHeaderProperties properties;
+
+    @Override
+    public boolean preHandle(HttpServletRequest request,
+                             HttpServletResponse response,
+                             Object handler) throws Exception {
+
+        // If not a controller method, skip
+        if (!(handler instanceof HandlerMethod)) {
+            return true;
+        }
+
+        if (!properties.isEnabled()) {
+            // Global switch off – just log and continue
+            logRoutingHeaders(request, null);
+            return true;
+        }
+
+        String path = request.getRequestURI();
+        EndpointConfig config = properties.getConfigForPath(path);
+
+        // No config for this path → no validation
+        if (config == null || !config.isValidate()) {
+            logRoutingHeaders(request, config);
+            return true;
+        }
+
+        // Validate required headers
+        List<String> requiredHeaders = config.getHeaders();
+        List<String> missing = requiredHeaders.stream()
+                .filter(h -> !StringUtils.hasText(request.getHeader(h)))
+                .collect(Collectors.toList());
+
+        logRoutingHeaders(request, config);
+
+        if (!missing.isEmpty()) {
+            writeErrorResponse(response, missing);
+            return false; // stop controller call
+        }
+
+        return true;
+    }
+
+    private void logRoutingHeaders(HttpServletRequest request, EndpointConfig config) {
+        String path = request.getRequestURI();
+        String method = request.getMethod();
+
+        log.info("[RoutingHeaders] {} {} - config={}", method, path, config);
+
+        if (config != null && config.getHeaders() != null) {
+            config.getHeaders().forEach(h -> {
+                String value = request.getHeader(h);
+                log.info("[RoutingHeaders] {}: {}", h, value);
+            });
+        }
+    }
+
+    private void writeErrorResponse(HttpServletResponse response, List<String> missing) throws IOException {
+        response.setStatus(HttpStatus.BAD_REQUEST.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+
+        String body = """
+                {
+                  "code": "MISSING_ROUTING_HEADERS",
+                  "message": "Required routing headers are missing",
+                  "details": %s
+                }
+                """.formatted(
+                missing.stream()
+                        .map(h -> "\"" + h + "\"")
+                        .collect(Collectors.joining(",", "[", "]"))
+        );
+
+        response.getWriter().write(body);
+    }
+}
+
+
+
+package com.yourorg.routing.config;
+
+import com.yourorg.routing.web.RoutingHeaderValidationInterceptor;
+import lombok.RequiredArgsConstructor;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+@Configuration
+@EnableConfigurationProperties(RoutingHeaderProperties.class)
+@RequiredArgsConstructor
+public class RoutingHeaderWebConfig implements WebMvcConfigurer {
+
+    private final RoutingHeaderProperties properties;
+
+    @Bean
+    public RoutingHeaderValidationInterceptor routingHeaderValidationInterceptor() {
+        return new RoutingHeaderValidationInterceptor(properties);
+    }
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        // Apply to all paths; logic inside interceptor decides what to validate.
+        registry.addInterceptor(routingHeaderValidationInterceptor())
+                .addPathPatterns("/**");
+    }
+}
+
+
