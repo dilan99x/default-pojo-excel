@@ -216,4 +216,137 @@ public class RoutingHeaderProperties {
 }
 
 
+///////////////////////////////////////////////////////////////////////////////////////////
+
+package com.yourorg.routing.web;
+
+import com.yourorg.routing.config.RoutingHeaderProperties;
+import com.yourorg.routing.config.RoutingHeaderProperties.EndpointConfig;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
+import org.springframework.web.method.HandlerMethod;
+import org.springframework.web.servlet.HandlerInterceptor;
+
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+@Slf4j
+@RequiredArgsConstructor
+public class RoutingHeaderValidationInterceptor implements HandlerInterceptor {
+
+    private final RoutingHeaderProperties properties;
+
+    @Override
+    public boolean preHandle(HttpServletRequest request,
+                             HttpServletResponse response,
+                             Object handler) throws Exception {
+
+        // Only care about controller methods; skip static resources etc.
+        if (!(handler instanceof HandlerMethod)) {
+            return true;
+        }
+
+        String path = request.getRequestURI();
+        String method = request.getMethod();
+
+        EndpointConfig config = properties.getConfigForPath(path);
+        boolean globalEnabled = properties.isEnabled();
+        boolean endpointValidate = config != null && config.isValidate();
+
+        // Always log routing headers (requirement #1 + #2)
+        logRoutingHeadersSingleLine(request, path, method, globalEnabled, config);
+
+        // If no config for this path → no validation (just logging)
+        if (config == null) {
+            return true;
+        }
+
+        // If global disabled OR endpoint validate=false → no validation, just logging
+        if (!globalEnabled || !endpointValidate) {
+            return true;
+        }
+
+        // At this point: global enabled AND endpoint.validate=true → perform validation
+        List<String> requiredHeaders = config.getHeaders();
+        if (CollectionUtils.isEmpty(requiredHeaders)) {
+            return true; // nothing to validate
+        }
+
+        List<String> missing = requiredHeaders.stream()
+                .filter(h -> !StringUtils.hasText(request.getHeader(h)))
+                .collect(Collectors.toList());
+
+        if (!missing.isEmpty()) {
+            // Validation failed → write error + stop further processing (requirement #4)
+            writeErrorResponse(response, missing);
+            return false;
+        }
+
+        // Validation passed → continue to controller
+        return true;
+    }
+
+    private void logRoutingHeadersSingleLine(HttpServletRequest request,
+                                             String path,
+                                             String method,
+                                             boolean globalEnabled,
+                                             EndpointConfig config) {
+
+        // Build map of headerName -> value only for headers defined in config
+        Map<String, String> headerValues = new LinkedHashMap<>();
+
+        if (config != null && !CollectionUtils.isEmpty(config.getHeaders())) {
+            for (String headerName : config.getHeaders()) {
+                String value = request.getHeader(headerName);
+                headerValues.put(headerName, value);
+            }
+        }
+
+        // Build single line log
+        String configInfo = (config == null)
+                ? "none"
+                : String.format("{validate=%s, headers=%s}",
+                                config.isValidate(), config.getHeaders());
+
+        String headerInfo = headerValues.entrySet().stream()
+                .map(e -> e.getKey() + "=" + e.getValue())
+                .collect(Collectors.joining(", ", "{", "}"));
+
+        log.info("[RoutingHeaders] method={} path={} globalEnabled={} endpointConfig={} headerValues={}",
+                method, path, globalEnabled, configInfo, headerInfo);
+    }
+
+    private void writeErrorResponse(HttpServletResponse response,
+                                    List<String> missingHeaders) throws IOException {
+
+        response.setStatus(HttpStatus.BAD_REQUEST.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+
+        String detailsArray = missingHeaders.stream()
+                .map(h -> "\"" + h + "\"")
+                .collect(Collectors.joining(",", "[", "]"));
+
+        String body = """
+                {
+                  "code": "MISSING_ROUTING_HEADERS",
+                  "message": "Required routing headers are missing",
+                  "details": %s
+                }
+                """.formatted(detailsArray);
+
+        response.getWriter().write(body);
+    }
+}
+
+
+
 
