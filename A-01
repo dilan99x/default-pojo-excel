@@ -1,4 +1,14 @@
 
+ @Bean
+    public ObjectMapper objectMapper() {
+        ObjectMapper mapper = JsonMapper.builder()
+                .addModule(new BlackbirdModule())   // Performance booster
+                .findAndAddModules()                // Automatically loads Java time support
+                .build();
+
+        return mapper;
+    }
+
 package com.dbs.cb.gapi.core.config;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
