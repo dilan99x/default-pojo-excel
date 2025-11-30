@@ -1,79 +1,102 @@
-account-status-code-config: |
-    {
-      "accountStatusCodeMapping": {
-        "statusCodeRules": [
-          {
-            "conditions": {
-              "cust_acct_ste": "8",
-              "pns_prod_code": [
-                "010",
-                "011"
-              ],
-              "cncl_acct_reason": "DELIQUENT"
-            },
-            "accountStatusCode": "9"
-          },
-          {
-            "conditions": {
-              "cust_acct_ste": "8",
-              "pns_prod_code": [
-                "010",
-                "011"
-              ]
-            },
-            "accountStatusCode": "9"
-          },
-          {
-            "conditions": {
-              "cust_acct_ste": "1",
-              "pns_prod_code": "022"
-            },
-            "accountStatusCode": "01"
-          },
-          {
-            "conditions": {
-              "cust_acct_ste": "2",
-              "pns_prod_code": "022"
-            },
-            "accountStatusCode": "02"
-          },
-          {
-            "conditions": {
-              "cust_acct_ste": "8",
-              "pns_prod_code": "022",
-              "cncl_acct_reason": "TECHNICAL"
-            },
-            "accountStatusCode": "07"
-          },
-          {
-            "conditions": {
-              "cust_acct_ste": "8",
-              "pns_prod_code": "022",
-              "cncl_acct_reason": "DELIQUENT"
-            },
-            "accountStatusCode": "06"
-          },
-          {
-            "conditions": {
-              "cust_acct_ste": "8",
-              "pns_prod_code": "022"
-            },
-            "accountStatusCode": "06"
-          },
-          {
-            "conditions": {
-              "cust_acct_ste": "9",
-              "pns_prod_code": "022"
-            },
-            "accountStatusCode": "05"
-          },
-          {
-            "conditions": {
-              "wthr_acct_frz_ind": "Y",
-              "pns_prod_code": "022"
-            },
-            "accountStatusCode": "03"
-          }
-        ]
-      }
-    }
+spring:
+  datasource:
+    url: jdbc:h2:mem:transformerdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    database-platform: org.hibernate.dialect.H2Dialect
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console   # optional
+
+
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-jpa</artifactId>
+</dependency>
+
+
+
+<dependency>
+    <groupId>com.h2database</groupId>
+    <artifactId>h2</artifactId>
+    <scope>runtime</scope>
+</dependency>
+
+
+
+CREATE TABLE IF NOT EXISTS gapi_mapping_transformers (
+    mapping_id VARCHAR(255) PRIMARY KEY,
+    mapping_json CLOB NOT NULL,
+    mapping_json_staging CLOB,
+    ticket_id VARCHAR(16),
+    approval_status VARCHAR(16),
+    created_by VARCHAR(64),
+    modified_by VARCHAR(64),
+    approved_by VARCHAR(64),
+    modified_by_staging VARCHAR(64),
+    created_time TIMESTAMP,
+    modified_time TIMESTAMP,
+    approved_time TIMESTAMP,
+    modified_time_staging TIMESTAMP,
+    updated_time TIMESTAMP
+);
+
+
+@Entity
+@Table(name = "gapi_mapping_transformers")
+@Data
+public class GapiMappingTransformerEntity {
+
+    @Id
+    @Column(name = "mapping_id", length = 255)
+    private String mappingId;    // Primary key (e.g., "account-status-mapping")
+
+    @Lob
+    @Column(name = "mapping_json", nullable = false)
+    private String mappingJson;   // Main JSON
+
+    @Lob
+    @Column(name = "mapping_json_staging")
+    private String mappingJsonStaging;   // Staging JSON
+
+    @Column(name = "ticket_id", length = 16)
+    private String ticketId;
+
+    @Column(name = "approval_status", length = 16)
+    private String approvalStatus; // PENDING / APPROVED / REJECTED
+
+    @Column(name = "created_by", length = 64)
+    private String createdBy;
+
+    @Column(name = "modified_by", length = 64)
+    private String modifiedBy;
+
+    @Column(name = "approved_by", length = 64)
+    private String approvedBy;
+
+    @Column(name = "modified_by_staging", length = 64)
+    private String modifiedByStaging;
+
+    @Column(name = "created_time", updatable = false)
+    private LocalDateTime createdTime;
+
+    @Column(name = "modified_time")
+    private LocalDateTime modifiedTime;
+
+    @Column(name = "approved_time")
+    private LocalDateTime approvedTime;
+
+    @Column(name = "modified_time_staging")
+    private LocalDateTime modifiedTimeStaging;
+
+    @Column(name = "updated_time")
+    private LocalDateTime updatedTime;
+}
