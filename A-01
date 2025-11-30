@@ -5,15 +5,18 @@ spring:
     username: sa
     password:
 
-  jpa:
-    hibernate:
-      ddl-auto: update
-    database-platform: org.hibernate.dialect.H2Dialect
-
   h2:
     console:
       enabled: true
-      path: /h2-console   # optional
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,h2-console
+  endpoint:
+    h2-console:
+      enabled: true
 
 
 
