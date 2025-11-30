@@ -1,73 +1,39 @@
-package com.dbs.cb.gapi.core.repository;
-
-import com.dbs.cb.gapi.core.entity.GapiMappingTransformerEntity;
-import com.dbs.cb.gapi.core.exception.TransformationException;
-import com.dbs.cb.gapi.core.transformer.MappingConfig;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Component;
-
-import java.util.HashMap;
-import java.util.Map;
-
-@Slf4j
-@Component
+@Service
+@ConditionalOnProperty(prefix = "transformer",
+                      name = "account-status-loading-source",
+                      havingValue = "database")
 @RequiredArgsConstructor
-@ConditionalOnProperty(
-    name = "transformer.mapping-source",
-    havingValue = "database"
-)
-public class MappingConfigRepositoryDbImpl implements MappingConfigRepository {
+public class AccountStatusMappingServiceDbImpl implements AccountStatusMappingService {
 
-    private final GapiMappingTransformerJpaRepository jpaRepository;
+    private final GapiMappingTransformerRepository repo;
     private final ObjectMapper objectMapper;
 
-    private final Map<String, MappingConfig> cache = new HashMap<>();
-
     @Override
-    public MappingConfig getMappingConfig(String mappingId) {
-        MappingConfig cached = cache.get(mappingId);
-        if (cached != null) {
-            return cached;
-        }
+    public AccountStatusMapping loadAccountStatusMapping() {
+        GapiMappingTransformerEntity entity =
+            repo.findByMappingId("account-status-mapping")
+                .orElseThrow(() -> new TransformationException("Mapping not found"));
 
-        GapiMappingTransformerEntity entity = jpaRepository.findById(mappingId)
-                .orElseThrow(() ->
-                        new IllegalArgumentException("Mapping config not found for mappingId: " + mappingId));
+        JsonNode root = objectMapper.readTree(entity.getMappingJson());
 
-        MappingConfig config = parseMappingJson(entity.getMappingJson(), mappingId);
-        cache.put(mappingId, config);
-        return config;
+        return objectMapper.treeToValue(
+                root.get("account-status-mapping"),
+                AccountStatusMapping.class
+        );
     }
 
     @Override
-    public void loadAllMappingConfigs() {
-        log.info("Loading all mapping configs from database (gapi_mapping_transformers)");
-        long start = System.currentTimeMillis();
+    public AccountStatusCodeMapping loadAccountStatusCodeMapping() {
+        GapiMappingTransformerEntity entity =
+            repo.findByMappingId("account-status-code-mapping")
+                .orElseThrow(() -> new TransformationException("Mapping not found"));
 
-        jpaRepository.findByApprovalStatus("APPROVED").forEach(entity -> {
-            MappingConfig config = parseMappingJson(entity.getMappingJson(), entity.getMappingId());
-            cache.put(config.getMappingId(), config);
-            log.info("Loaded mapping config from DB: {}", config.getMappingId());
-        });
+        JsonNode root = objectMapper.readTree(entity.getMappingJson());
 
-        log.info("CONFIG_MAPPING_DB_LATENCY {} ms", System.currentTimeMillis() - start);
-    }
-
-    private MappingConfig parseMappingJson(String json, String mappingId) {
-        try {
-            MappingConfig config = objectMapper.readValue(json, MappingConfig.class);
-            if (config.getMappingId() == null) {
-                // enforce mappingId if not present inside JSON
-                config.setMappingId(mappingId);
-            }
-            return config;
-        } catch (Exception e) {
-            log.error("Failed to parse mappingJson for mappingId {}: {}", mappingId, e.getMessage(), e);
-            throw new TransformationException("Failed to parse mapping JSON for mappingId: " + mappingId, e);
-        }
+        return objectMapper.treeToValue(
+                root.get("accountStatusCodeMapping"),
+                AccountStatusCodeMapping.class
+        );
     }
 }
 
