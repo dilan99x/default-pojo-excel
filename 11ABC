@@ -1,0 +1,382 @@
+package com.yourapp.od;
+
+import com.yourapp.od.api.OdDetailsData;
+import com.yourapp.od.provider.OdRateArray;
+import com.yourapp.od.provider.ProviderOdResponse;
+import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+
+@Service
+public class OdDetailsService {
+
+    // Prime Rate constant (percentage points)
+    private static final BigDecimal PRIME_RATE = new BigDecimal("5.00");
+
+    public OdDetailsData buildOdDetails(ProviderOdResponse provider) {
+        if (provider == null || provider.getOdrateArray() == null || provider.getOdrateArray().isEmpty()) {
+            return OdDetailsData.builder().build();
+        }
+
+        OdRateArray active = selectActive(provider.getOdrateArray(), provider.getCurrOdratePtr());
+        if (active == null) {
+            return OdDetailsData.builder().build();
+        }
+
+        BigDecimal utilized = parseAmount(provider.getOdUtilizedAmount()); // MUST be mapped from payload
+
+        List<BigDecimal> tierRates = computeTierRates(active, PRIME_RATE);
+
+        BigDecimal l1 = parseLimit(active.getOdlmt1());
+        BigDecimal l2 = parseLimit(active.getOdlmt2());
+
+        Tier picked = pickSingleTier(tierRates, l1, l2, utilized);
+
+        return OdDetailsData.builder()
+                .fromAmount(picked.fromAmount())
+                .toAmount(picked.toAmount())
+                .ratePct(picked.ratePct())
+                .odType(safe(active.getOdtype()))
+                .effectiveDate(parseYYYYMMDD(active.getOdrateEffdate()))
+                .build();
+    }
+
+    // currOdratePtr is 1-based: "1" means first record
+    private OdRateArray selectActive(List<OdRateArray> list, String currPtr) {
+        if (list == null || list.isEmpty()) return null;
+
+        try {
+            int idx = Integer.parseInt(safe(currPtr)) - 1;
+            if (idx >= 0 && idx < list.size()) return list.get(idx);
+        } catch (Exception ignore) {}
+
+        return list.get(0);
+    }
+
+    private List<BigDecimal> computeTierRates(OdRateArray r, BigDecimal prime) {
+        String t = safe(r.getOdtype());
+        BigDecimal R1 = parseRate(r.getOdrate1());
+        BigDecimal R2 = parseRate(r.getOdrate2());
+        BigDecimal R3 = parseRate(r.getOdrate3());
+
+        return switch (t) {
+            case "0" -> List.of(prime.add(new BigDecimal("5.00"))); // Prime + 5%
+            case "1" -> List.of(R1);
+            case "2" -> List.of(R1, R2);
+            case "3" -> List.of(prime.add(R1));
+            case "4" -> List.of(prime.add(R1), prime.add(R2));
+            case "5" -> List.of(prime.add(R1), R2);
+            case "6" -> List.of(prime.add(R1), prime.add(R2), prime.add(R3));
+            case "7" -> List.of(prime.add(R1), prime.add(R2), R3);
+            default -> List.of();
+        };
+    }
+
+    // Return ONE tier only
+    private Tier pickSingleTier(List<BigDecimal> rates, BigDecimal l1, BigDecimal l2, BigDecimal utilized) {
+        if (rates == null || rates.isEmpty()) return new Tier(BigDecimal.ZERO, null, BigDecimal.ZERO);
+
+        BigDecimal A = utilized == null ? BigDecimal.ZERO : utilized;
+
+        if (rates.size() == 1) {
+            return new Tier(BigDecimal.ZERO, null, rates.get(0));
+        }
+
+        if (rates.size() == 2) {
+            if (l1 == null) return new Tier(BigDecimal.ZERO, null, rates.get(0)); // fallback
+            return (A.compareTo(l1) < 0)
+                    ? new Tier(BigDecimal.ZERO, l1, rates.get(0))
+                    : new Tier(l1, null, rates.get(1));
+        }
+
+        // 3 tiers
+        if (l1 == null || l2 == null) return new Tier(BigDecimal.ZERO, null, rates.get(0)); // fallback
+
+        if (A.compareTo(l1) < 0) return new Tier(BigDecimal.ZERO, l1, rates.get(0));
+        if (A.compareTo(l2) < 0) return new Tier(l1, l2, rates.get(1));
+        return new Tier(l2, null, rates.get(2));
+    }
+
+    private record Tier(BigDecimal fromAmount, BigDecimal toAmount, BigDecimal ratePct) {}
+
+    private static String safe(String s) { return s == null ? "" : s.trim(); }
+
+    private static BigDecimal parseRate(String s) {
+        String x = safe(s);
+        if (x.isEmpty()) return BigDecimal.ZERO;
+        return new BigDecimal(x);
+    }
+
+    private static BigDecimal parseLimit(String s) {
+        String x = safe(s);
+        if (x.isEmpty() || x.matches("^0+$")) return null;
+        return new BigDecimal(x);
+    }
+
+    private static BigDecimal parseAmount(String s) {
+        String x = safe(s);
+        if (x.isEmpty() || x.matches("^0+$")) return BigDecimal.ZERO;
+        return new BigDecimal(x);
+    }
+
+    private static LocalDate parseYYYYMMDD(String s) {
+        String x = safe(s);
+        if (x.isEmpty() || x.equals("00000000")) return null;
+        try {
+            return LocalDate.parse(x, DateTimeFormatter.BASIC_ISO_DATE);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+}
+
+
+
+
+// ============================================================================
+// FULL IMPLEMENTATION (single tier output)
+// Assumptions (hardcoded):
+// 1) currOdratePtr is 1-based ("1" => first element)
+// 2) Prime rate is a constant PRIME_RATE (percentage points)
+// 3) Limits (odlmt1/odlmt2) are normal numeric strings (no implied decimals)
+// 4) To choose the tier for 2/3-tier types you MUST have utilized/outstanding amount
+//    -> map it into ProviderOdResponse.odUtilizedAmount (string).
+// ============================================================================
+
+package com.yourapp.od;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+
+// ------------------------------------
+// 1) Your API output (single tier)
+// ------------------------------------
+public record OdDetailsData(
+        BigDecimal fromAmount,
+        BigDecimal toAmount,     // null = no upper bound
+        BigDecimal ratePct,      // percentage points (e.g., 7.25 means 7.25%)
+        String odType,
+        LocalDate effectiveDate
+) {}
+
+// ------------------------------------
+// 2) Provider wrapper + array record
+//    (adjust field names to match your real provider POJOs)
+// ------------------------------------
+class ProviderOdResponse {
+    private String currOdratePtr;
+    private List<OdRateArray> odrateArray;
+
+    // This MUST be available to select a single tier for 2/3-tier types.
+    // Map from provider payload (utilized/outstanding OD amount).
+    private String odUtilizedAmount;
+
+    public String getCurrOdratePtr() { return currOdratePtr; }
+    public void setCurrOdratePtr(String currOdratePtr) { this.currOdratePtr = currOdratePtr; }
+
+    public List<OdRateArray> getOdrateArray() { return odrateArray; }
+    public void setOdrateArray(List<OdRateArray> odrateArray) { this.odrateArray = odrateArray; }
+
+    public String getOdUtilizedAmount() { return odUtilizedAmount; }
+    public void setOdUtilizedAmount(String odUtilizedAmount) { this.odUtilizedAmount = odUtilizedAmount; }
+}
+
+class OdRateArray {
+    private String odtype;
+    private String odrate1;
+    private String odrate2;
+    private String odrate3;
+    private String odlmt1;
+    private String odlmt2;
+    private String odrateEffdate; // YYYYMMDD or 00000000
+
+    public String getOdtype() { return odtype; }
+    public void setOdtype(String odtype) { this.odtype = odtype; }
+
+    public String getOdrate1() { return odrate1; }
+    public void setOdrate1(String odrate1) { this.odrate1 = odrate1; }
+
+    public String getOdrate2() { return odrate2; }
+    public void setOdrate2(String odrate2) { this.odrate2 = odrate2; }
+
+    public String getOdrate3() { return odrate3; }
+    public void setOdrate3(String odrate3) { this.odrate3 = odrate3; }
+
+    public String getOdlmt1() { return odlmt1; }
+    public void setOdlmt1(String odlmt1) { this.odlmt1 = odlmt1; }
+
+    public String getOdlmt2() { return odlmt2; }
+    public void setOdlmt2(String odlmt2) { this.odlmt2 = odlmt2; }
+
+    public String getOdrateEffdate() { return odrateEffdate; }
+    public void setOdrateEffdate(String odrateEffdate) { this.odrateEffdate = odrateEffdate; }
+}
+
+// ------------------------------------
+// 3) Full service: active record -> tier rates -> pick ONE tier -> output
+// ------------------------------------
+class OdDetailsService {
+
+    // Prime Rate constant (percentage points). Example: 5.00 means 5%.
+    private static final BigDecimal PRIME_RATE = new BigDecimal("5.00");
+
+    // For odtype=0 logic: Prime + 5% (percentage points)
+    private static final BigDecimal PLUS_FIVE_PCT_POINTS = new BigDecimal("5.00");
+
+    public OdDetailsData buildOdDetails(ProviderOdResponse provider) {
+        if (provider == null || provider.getOdrateArray() == null || provider.getOdrateArray().isEmpty()) {
+            return new OdDetailsData(null, null, null, null, null);
+        }
+
+        OdRateArray active = selectActive(provider.getOdrateArray(), provider.getCurrOdratePtr());
+        if (active == null) {
+            return new OdDetailsData(null, null, null, null, null);
+        }
+
+        // Utilized/outstanding amount used to select tier (required for multi-tier types)
+        BigDecimal utilized = parseAmount(provider.getOdUtilizedAmount());
+
+        // Compute tier rate(s) based on odtype table
+        List<BigDecimal> tierRates = computeTierRates(active);
+
+        // Limits used to form bands
+        BigDecimal l1 = parseLimit(active.getOdlmt1());
+        BigDecimal l2 = parseLimit(active.getOdlmt2());
+
+        // Pick ONE tier (single output)
+        Tier picked = pickSingleTier(tierRates, l1, l2, utilized);
+
+        return new OdDetailsData(
+                picked.fromAmount(),
+                picked.toAmount(),
+                picked.ratePct(),
+                safe(active.getOdtype()),
+                parseYYYYMMDD(active.getOdrateEffdate())
+        );
+    }
+
+    // currOdratePtr is 1-based: "1" => first record
+    private OdRateArray selectActive(List<OdRateArray> list, String currPtr) {
+        if (list == null || list.isEmpty()) return null;
+
+        try {
+            int idx = Integer.parseInt(safe(currPtr)) - 1;
+            if (idx >= 0 && idx < list.size()) return list.get(idx);
+        } catch (Exception ignore) { }
+
+        // fallback
+        return list.get(0);
+    }
+
+    // Implements your odtype table (rates in percentage points)
+    private List<BigDecimal> computeTierRates(OdRateArray r) {
+        String t = safe(r.getOdtype());
+
+        BigDecimal R1 = parseRate(r.getOdrate1());
+        BigDecimal R2 = parseRate(r.getOdrate2());
+        BigDecimal R3 = parseRate(r.getOdrate3());
+
+        return switch (t) {
+            case "0" -> List.of(PRIME_RATE.add(PLUS_FIVE_PCT_POINTS)); // Prime + 5%
+            case "1" -> List.of(R1);
+            case "2" -> List.of(R1, R2);
+            case "3" -> List.of(PRIME_RATE.add(R1));
+            case "4" -> List.of(PRIME_RATE.add(R1), PRIME_RATE.add(R2));
+            case "5" -> List.of(PRIME_RATE.add(R1), R2);
+            case "6" -> List.of(PRIME_RATE.add(R1), PRIME_RATE.add(R2), PRIME_RATE.add(R3));
+            case "7" -> List.of(PRIME_RATE.add(R1), PRIME_RATE.add(R2), R3);
+            default  -> List.of();
+        };
+    }
+
+    // Return ONE tier only (single response)
+    private Tier pickSingleTier(List<BigDecimal> rates, BigDecimal l1, BigDecimal l2, BigDecimal utilized) {
+        if (rates == null || rates.isEmpty()) {
+            return new Tier(BigDecimal.ZERO, null, BigDecimal.ZERO);
+        }
+
+        BigDecimal A = utilized == null ? BigDecimal.ZERO : utilized;
+
+        // 1 tier
+        if (rates.size() == 1) {
+            return new Tier(BigDecimal.ZERO, null, rates.get(0));
+        }
+
+        // 2 tiers: [0, l1) and [l1, +inf)
+        if (rates.size() == 2) {
+            // If l1 missing, cannot split; pick tier1 (fallback)
+            if (l1 == null) {
+                return new Tier(BigDecimal.ZERO, null, rates.get(0));
+            }
+
+            if (A.compareTo(l1) < 0) {
+                return new Tier(BigDecimal.ZERO, l1, rates.get(0));
+            } else {
+                return new Tier(l1, null, rates.get(1));
+            }
+        }
+
+        // 3 tiers: [0, l1), [l1, l2), [l2, +inf)
+        // If limits missing, cannot split; pick tier1 (fallback)
+        if (l1 == null || l2 == null) {
+            return new Tier(BigDecimal.ZERO, null, rates.get(0));
+        }
+
+        if (A.compareTo(l1) < 0) return new Tier(BigDecimal.ZERO, l1, rates.get(0));
+        if (A.compareTo(l2) < 0) return new Tier(l1, l2, rates.get(1));
+        return new Tier(l2, null, rates.get(2));
+    }
+
+    // Internal tier holder
+    private record Tier(BigDecimal fromAmount, BigDecimal toAmount, BigDecimal ratePct) {}
+
+    // -------------------------
+    // Parsing helpers
+    // -------------------------
+    private static String safe(String s) {
+        return s == null ? "" : s.trim();
+    }
+
+    // Rates like "1.50" => 1.50
+    private static BigDecimal parseRate(String s) {
+        String x = safe(s);
+        if (x.isEmpty()) return BigDecimal.ZERO;
+        return new BigDecimal(x);
+    }
+
+    // Limits: treat blank or all-zero (e.g., "00000000") as null
+    private static BigDecimal parseLimit(String s) {
+        String x = safe(s);
+        if (x.isEmpty() || x.matches("^0+$")) return null;
+        return new BigDecimal(x);
+    }
+
+    // Amount: treat blank/all-zero as 0
+    private static BigDecimal parseAmount(String s) {
+        String x = safe(s);
+        if (x.isEmpty() || x.matches("^0+$")) return BigDecimal.ZERO;
+        return new BigDecimal(x);
+    }
+
+    // YYYYMMDD => LocalDate, "00000000" => null
+    private static LocalDate parseYYYYMMDD(String s) {
+        String x = safe(s);
+        if (x.isEmpty() || "00000000".equals(x)) return null;
+
+        try {
+            return LocalDate.of(
+                    Integer.parseInt(x.substring(0, 4)),
+                    Integer.parseInt(x.substring(4, 6)),
+                    Integer.parseInt(x.substring(6, 8))
+            );
+        } catch (Exception e) {
+            return null;
+        }
+    }
+}
+
+
