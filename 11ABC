@@ -1,36 +1,35 @@
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import java.util.Optional;
-
-public class ProductTypeExtractor {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    public static Optional<String> findMatchingProductAsString(String jsonString, String userProductCode) throws Exception {
+public static String filterJsonByProductTypeCode(String jsonString, String userProductCode) throws Exception {
         String normalized = normalizeTo3Digits(userProductCode);
 
-        JsonNode root = MAPPER.readTree(jsonString);
-        JsonNode data = root.path("data");
-        if (!data.isArray()) return Optional.empty();
+        JsonNode rootNode = MAPPER.readTree(jsonString);
+        if (!(rootNode instanceof ObjectNode root)) {
+            throw new IllegalArgumentException("Invalid JSON: root is not an object");
+        }
 
-        for (JsonNode item : data) {
+        JsonNode dataNode = root.get("data");
+        if (dataNode == null || !dataNode.isArray()) {
+            throw new IllegalArgumentException("Invalid JSON: 'data' is missing or not an array");
+        }
+
+        // find match
+        JsonNode matched = null;
+        for (JsonNode item : dataNode) {
             String productTypeCode = item.path("productTypeCode").asText(null);
             if (normalized.equals(productTypeCode)) {
-                // compact JSON string (no pretty-print)
-                return Optional.of(MAPPER.writeValueAsString(item));
+                matched = item;
+                break; // keep first match
             }
         }
-        return Optional.empty();
-    }
 
-    private static String normalizeTo3Digits(String code) {
-        if (code == null) return null;
-        String trimmed = code.trim();
-        if (trimmed.matches("\\d+")) {
-            int val = Integer.parseInt(trimmed);
-            return String.format("%03d", val);
+        if (matched == null) {
+            throw new IllegalArgumentException("No match found for productTypeCode=" + normalized);
         }
-        return trimmed;
+
+        // Replace data[] with a single-element array containing the match
+        ArrayNode newData = MAPPER.createArrayNode();
+        newData.add(matched);
+        root.set("data", newData);
+
+        // Return full JSON as string (use pretty printer if you want)
+        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
     }
-}
