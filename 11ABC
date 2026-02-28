@@ -1,196 +1,36 @@
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
-import java.math.RoundingMode;
-import java.util.Arrays;
+import java.util.Optional;
 
-public class OdRatesBuilder {
+public class ProductTypeExtractor {
 
-    private static final BigDecimal ZERO_RATE = new BigDecimal("0.000");
-    private static final BigDecimal FIVE_PERCENT_POINTS = new BigDecimal("5.000"); // PR + 5%
-    private static final BigInteger ZERO_AMT = BigInteger.ZERO;
-    private static final BigInteger MAX_TIER_TO = new BigInteger("9999999999999999999"); // as per your sample
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    /**
-     * Builds the final oDRates response (always 3 tiers) based on:
-     * - active record selected using currOdratePtr (1-based)
-     * - OD type rate derivation rules
-     * - From/To amount derivation rules
-     * - currency passed in
-     *
-     * @param source     input JsonNode containing currOdratePtr and odRates array
-     * @param primeRate  PR as "percentage points" (e.g., 5.000 means 5%)
-     * @param currency   e.g., "SGD"
-     * @param mapper     ObjectMapper for creating nodes
-     */
-    public static ArrayNode buildOdRatesResponse(JsonNode source,
-                                                 BigDecimal primeRate,
-                                                 String currency,
-                                                 ObjectMapper mapper) {
+    public static Optional<String> findMatchingProductAsString(String jsonString, String userProductCode) throws Exception {
+        String normalized = normalizeTo3Digits(userProductCode);
 
-        if (source == null) {
-            throw new IllegalArgumentException("source JsonNode is null");
+        JsonNode root = MAPPER.readTree(jsonString);
+        JsonNode data = root.path("data");
+        if (!data.isArray()) return Optional.empty();
+
+        for (JsonNode item : data) {
+            String productTypeCode = item.path("productTypeCode").asText(null);
+            if (normalized.equals(productTypeCode)) {
+                // compact JSON string (no pretty-print)
+                return Optional.of(MAPPER.writeValueAsString(item));
+            }
         }
-        if (mapper == null) {
-            throw new IllegalArgumentException("ObjectMapper is null");
-        }
-        if (primeRate == null) {
-            throw new IllegalArgumentException("primeRate is null");
-        }
-        if (currency == null || currency.isBlank()) {
-            throw new IllegalArgumentException("currency is blank");
-        }
-
-        JsonNode odRatesNode = source.get("odRates");
-        if (odRatesNode == null || !odRatesNode.isArray()) {
-            throw new IllegalArgumentException("Missing or invalid 'odRates' array");
-        }
-
-        int ptrOneBased = parseIntStrict(source.path("currOdratePtr").asText(null), "currOdratePtr");
-        int index = ptrOneBased - 1;
-        if (index < 0 || index >= odRatesNode.size()) {
-            throw new IllegalArgumentException("currOdratePtr out of bounds. ptr=" + ptrOneBased + ", odRates.size=" + odRatesNode.size());
-        }
-
-        JsonNode active = odRatesNode.get(index);
-
-        int odType = parseIntStrict(active.path("odtype").asText(null), "odtype");
-
-        BigDecimal r1 = parseDecimal(active.path("odrate1").asText("0.000"));
-        BigDecimal r2 = parseDecimal(active.path("odrate2").asText("0.000"));
-        BigDecimal r3 = parseDecimal(active.path("odrate3").asText("0.000"));
-
-        BigInteger l1 = parseAmount(active.path("odLmt1").asText("0"));
-        BigInteger l2 = parseAmount(active.path("odLmt2").asText("0"));
-
-        // Amount tiers (always 3)
-        BigInteger[] from = new BigInteger[]{ ZERO_AMT, l1, l2 };
-        BigInteger[] to   = new BigInteger[]{ l1, l2, MAX_TIER_TO };
-
-        // Rate tiers (always 3; missing tiers are 0.000)
-        BigDecimal[] rates = deriveRates(odType, primeRate, r1, r2, r3);
-
-        ArrayNode out = mapper.createArrayNode();
-        for (int i = 0; i < 3; i++) {
-            out.add(buildTier(mapper, currency, from[i], to[i], rates[i]));
-        }
-        return out;
+        return Optional.empty();
     }
 
-    private static BigDecimal[] deriveRates(int odType,
-                                           BigDecimal pr,
-                                           BigDecimal r1,
-                                           BigDecimal r2,
-                                           BigDecimal r3) {
-
-        // default all tiers missing => 0.000
-        BigDecimal[] out = new BigDecimal[]{ ZERO_RATE, ZERO_RATE, ZERO_RATE };
-
-        switch (odType) {
-            case 0 -> { // rate = PR + 5% (only 1 tier)
-                out[0] = pr.add(FIVE_PERCENT_POINTS);
-            }
-            case 1 -> { // tier1 = odrate1
-                out[0] = r1;
-            }
-            case 2 -> { // tier1 = odrate1, tier2 = odrate2
-                out[0] = r1;
-                out[1] = r2;
-            }
-            case 3 -> { // tier1 = PR + odrate1
-                out[0] = pr.add(r1);
-            }
-            case 4 -> { // tier1 = PR + odrate1, tier2 = PR + odrate2
-                out[0] = pr.add(r1);
-                out[1] = pr.add(r2);
-            }
-            case 5 -> { // tier1 = PR + odrate1, tier2 = odrate2
-                out[0] = pr.add(r1);
-                out[1] = r2;
-            }
-            case 6 -> { // tier1 = PR + r1, tier2 = PR + r2, tier3 = PR + r3
-                out[0] = pr.add(r1);
-                out[1] = pr.add(r2);
-                out[2] = pr.add(r3);
-            }
-            case 7 -> { // tier1 = PR + r1, tier2 = PR + r2, tier3 = r3
-                out[0] = pr.add(r1);
-                out[1] = pr.add(r2);
-                out[2] = r3;
-            }
-            default -> throw new IllegalArgumentException("Unsupported odtype: " + odType);
+    private static String normalizeTo3Digits(String code) {
+        if (code == null) return null;
+        String trimmed = code.trim();
+        if (trimmed.matches("\\d+")) {
+            int val = Integer.parseInt(trimmed);
+            return String.format("%03d", val);
         }
-
-        // normalize scale for output
-        for (int i = 0; i < out.length; i++) {
-            out[i] = out[i].setScale(3, RoundingMode.HALF_UP);
-        }
-        return out;
-    }
-
-    private static ObjectNode buildTier(ObjectMapper mapper,
-                                        String currency,
-                                        BigInteger fromAmt,
-                                        BigInteger toAmt,
-                                        BigDecimal rate) {
-
-        ObjectNode tier = mapper.createObjectNode();
-
-        ObjectNode amtTier = mapper.createObjectNode();
-        amtTier.set("FromAmt", buildAmount(mapper, fromAmt, currency));
-        amtTier.set("ToAmt", buildAmount(mapper, toAmt, currency));
-
-        tier.set("AmtTier", amtTier);
-        tier.put("IntRate", formatRate(rate));
-
-        return tier;
-    }
-
-    private static ObjectNode buildAmount(ObjectMapper mapper, BigInteger amt, String currency) {
-        ObjectNode n = mapper.createObjectNode();
-        n.put("Amt", amt.toString());
-        n.put("Cur", currency);
-        return n;
-    }
-
-    private static String formatRate(BigDecimal rate) {
-        if (rate == null) return "0.000";
-        return rate.setScale(3, RoundingMode.HALF_UP).toPlainString();
-    }
-
-    private static BigDecimal parseDecimal(String raw) {
-        if (raw == null || raw.isBlank()) return ZERO_RATE;
-        try {
-            return new BigDecimal(raw.trim());
-        } catch (Exception e) {
-            // If someone sends weird values, treat as 0.000 (safer than blowing up)
-            return ZERO_RATE;
-        }
-    }
-
-    private static BigInteger parseAmount(String raw) {
-        if (raw == null || raw.isBlank()) return BigInteger.ZERO;
-        // handles "000000000" -> 0, "000001234" -> 1234
-        try {
-            return new BigInteger(raw.trim());
-        } catch (Exception e) {
-            return BigInteger.ZERO;
-        }
-    }
-
-    private static int parseIntStrict(String raw, String fieldName) {
-        if (raw == null || raw.isBlank()) {
-            throw new IllegalArgumentException("Missing or blank '" + fieldName + "'");
-        }
-        try {
-            return Integer.parseInt(raw.trim());
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Invalid integer for '" + fieldName + "': " + raw, e);
-        }
+        return trimmed;
     }
 }
