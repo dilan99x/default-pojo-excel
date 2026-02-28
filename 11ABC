@@ -1,35 +1,89 @@
-public static String filterJsonByProductTypeCode(String jsonString, String userProductCode) throws Exception {
-        String normalized = normalizeTo3Digits(userProductCode);
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import lombok.extern.slf4j.Slf4j;
 
-        JsonNode rootNode = MAPPER.readTree(jsonString);
-        if (!(rootNode instanceof ObjectNode root)) {
-            throw new IllegalArgumentException("Invalid JSON: root is not an object");
+@Slf4j
+public class ProductTypeFilter {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /**
+     * Filters root JSON's data[] to matching productTypeCode.
+     * - No exceptions thrown.
+     * - If no match: returns same JSON structure but data=[].
+     * - If invalid JSON / missing data: returns original JSON.
+     */
+    public static String filterJsonByProductTypeCode(String jsonString, String userProductCode) {
+        if (jsonString == null || jsonString.isBlank()) {
+            log.error("filterJsonByProductTypeCode: input jsonString is null/blank");
+            return jsonString;
         }
 
-        JsonNode dataNode = root.get("data");
-        if (dataNode == null || !dataNode.isArray()) {
-            throw new IllegalArgumentException("Invalid JSON: 'data' is missing or not an array");
+        final String normalized = normalizeTo3DigitsSafe(userProductCode);
+        if (normalized == null) {
+            log.error("filterJsonByProductTypeCode: userProductCode is null/blank");
+            return jsonString;
         }
 
-        // find match
-        JsonNode matched = null;
-        for (JsonNode item : dataNode) {
-            String productTypeCode = item.path("productTypeCode").asText(null);
-            if (normalized.equals(productTypeCode)) {
-                matched = item;
-                break; // keep first match
+        try {
+            JsonNode rootNode = MAPPER.readTree(jsonString);
+
+            if (!(rootNode instanceof ObjectNode)) {
+                log.error("filterJsonByProductTypeCode: root JSON is not an object");
+                return jsonString;
+            }
+
+            ObjectNode root = (ObjectNode) rootNode;
+
+            JsonNode dataNode = root.get("data");
+            if (dataNode == null || !dataNode.isArray()) {
+                log.error("filterJsonByProductTypeCode: 'data' is missing or not an array");
+                return jsonString;
+            }
+
+            JsonNode matched = null;
+            for (JsonNode item : dataNode) {
+                String productTypeCode = item.path("productTypeCode").asText(null);
+                if (normalized.equals(productTypeCode)) {
+                    matched = item;
+                    break; // first match only
+                }
+            }
+
+            ArrayNode newData = MAPPER.createArrayNode();
+
+            if (matched == null) {
+                log.error("filterJsonByProductTypeCode: no match found for productTypeCode={}", normalized);
+                // IMPORTANT: return same structure but empty data[]
+                root.set("data", newData);
+                return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+            }
+
+            newData.add(matched);
+            root.set("data", newData);
+
+            return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+
+        } catch (Exception e) {
+            log.error("filterJsonByProductTypeCode: failed to parse/filter JSON. productTypeCode={}", normalized, e);
+            return jsonString;
+        }
+    }
+
+    private static String normalizeTo3DigitsSafe(String code) {
+        if (code == null) return null;
+        String trimmed = code.trim();
+        if (trimmed.isEmpty()) return null;
+
+        if (trimmed.matches("\\d+")) {
+            try {
+                return String.format("%03d", Integer.parseInt(trimmed));
+            } catch (NumberFormatException e) {
+                return null;
             }
         }
-
-        if (matched == null) {
-            throw new IllegalArgumentException("No match found for productTypeCode=" + normalized);
-        }
-
-        // Replace data[] with a single-element array containing the match
-        ArrayNode newData = MAPPER.createArrayNode();
-        newData.add(matched);
-        root.set("data", newData);
-
-        // Return full JSON as string (use pretty printer if you want)
-        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+        return trimmed;
     }
+}
