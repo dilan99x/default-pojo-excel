@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.List;
+
 @Slf4j
 public class ProductTypeFilter {
 
@@ -11,27 +13,30 @@ public class ProductTypeFilter {
 
     /**
      * Filters root JSON's data[] to matching productTypeCode.
-     * - No exceptions thrown.
-     * - If no match: returns same JSON structure but data=[].
-     * - If invalid JSON / missing data: returns original JSON.
+     * For CA edge-case: if input is 021 and no match, fallback to 020.
+     * - No exceptions thrown
+     * - If no match: returns same JSON structure but data=[]
+     * - If invalid JSON/missing data: returns original JSON
      */
-    public static String filterJsonByProductTypeCode(String jsonString, String userProductCode) {
+    public static String filterJsonByProductTypeCodeWithFallback(String jsonString, String userProductCode) {
         if (jsonString == null || jsonString.isBlank()) {
-            log.error("filterJsonByProductTypeCode: input jsonString is null/blank");
+            log.error("filterJsonByProductTypeCodeWithFallback: input jsonString is null/blank");
             return jsonString;
         }
 
-        final String normalized = normalizeTo3DigitsSafe(userProductCode);
+        String normalized = normalizeTo3DigitsSafe(userProductCode);
         if (normalized == null) {
-            log.error("filterJsonByProductTypeCode: userProductCode is null/blank");
+            log.error("filterJsonByProductTypeCodeWithFallback: userProductCode is null/blank");
             return jsonString;
         }
+
+        // Fallback rule set
+        List<String> codesToTry = buildCodesToTry(normalized);
 
         try {
             JsonNode rootNode = MAPPER.readTree(jsonString);
-
             if (!(rootNode instanceof ObjectNode)) {
-                log.error("filterJsonByProductTypeCode: root JSON is not an object");
+                log.error("filterJsonByProductTypeCodeWithFallback: root JSON is not an object");
                 return jsonString;
             }
 
@@ -39,37 +44,58 @@ public class ProductTypeFilter {
 
             JsonNode dataNode = root.get("data");
             if (dataNode == null || !dataNode.isArray()) {
-                log.error("filterJsonByProductTypeCode: 'data' is missing or not an array");
+                log.error("filterJsonByProductTypeCodeWithFallback: 'data' is missing or not an array");
                 return jsonString;
             }
 
             JsonNode matched = null;
-            for (JsonNode item : dataNode) {
-                String productTypeCode = item.path("productTypeCode").asText(null);
-                if (normalized.equals(productTypeCode)) {
-                    matched = item;
-                    break; // first match only
+            String matchedCode = null;
+
+            // Try primary then fallback(s)
+            for (String code : codesToTry) {
+                matched = findFirstMatch((ArrayNode) dataNode, code);
+                if (matched != null) {
+                    matchedCode = code;
+                    break;
                 }
             }
 
             ArrayNode newData = MAPPER.createArrayNode();
 
             if (matched == null) {
-                log.error("filterJsonByProductTypeCode: no match found for productTypeCode={}", normalized);
-                // IMPORTANT: return same structure but empty data[]
-                root.set("data", newData);
+                log.error("No match found for productTypeCode(s) tried={}", codesToTry);
+                root.set("data", newData); // empty
                 return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+            }
+
+            if (!normalized.equals(matchedCode)) {
+                log.warn("Fallback used. userProductCode={} matchedProductTypeCode={}", normalized, matchedCode);
             }
 
             newData.add(matched);
             root.set("data", newData);
-
             return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
 
         } catch (Exception e) {
-            log.error("filterJsonByProductTypeCode: failed to parse/filter JSON. productTypeCode={}", normalized, e);
+            log.error("filterJsonByProductTypeCodeWithFallback: failed to parse/filter JSON. userProductCode={}", normalized, e);
             return jsonString;
         }
+    }
+
+    private static List<String> buildCodesToTry(String normalized) {
+        // Only apply fallback for CA: 021 -> try 021 then 020
+        if ("021".equals(normalized)) {
+            return List.of("021", "020");
+        }
+        return List.of(normalized);
+    }
+
+    private static JsonNode findFirstMatch(ArrayNode data, String code) {
+        for (JsonNode item : data) {
+            String productTypeCode = item.path("productTypeCode").asText(null);
+            if (code.equals(productTypeCode)) return item;
+        }
+        return null;
     }
 
     private static String normalizeTo3DigitsSafe(String code) {
