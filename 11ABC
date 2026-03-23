@@ -1,8 +1,15 @@
-values.yaml
-
 # Default values for deployment.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
+
+volumes:
+  additional:
+    - name: secrets
+      secret:
+        secretName: "gapicb-sg-enaas-file-credhub"
+        items:
+          - key: mainframe-p12-file-ref
+            path: mainframe-p12-file-ref.p12
 
 volumeMounts:
   additional:
@@ -23,25 +30,24 @@ image:
   tag: latest
 
 service:
-  name: gapicb-sg-casa-orchestration-apis
   ports: ["8080"]
 
 controller:
   enabled: true
   type: deployment-canary
 
-replicas:
-  min: 1
-  max: 1
-
 hpa:
   enabled: true
+  minReplicas: 1
+  maxReplicas: 1
   metrics:
     cpuUtilization: 85
     memoryUtilization: 85
 
 env:
   http.connection.log.enableFilter: true
+  APPDYNAMICS_AGENT_TIER_NAME: gapicb-sg-casa-orchestration-apis
+  OTEL_SERVICE_NAME: gapicb-sg-casa-orchestration-apis
 
 services:
   configmaps:
@@ -51,46 +57,6 @@ services:
     - gapi-appd-config
     - gapicb-sg-casa-orchestration-apis-errors
     - gapicb-sg-casa-orchestration-apis-access
-
-deploymentStrategy:
-  pipeline:
-    routename: gapicb-sg-casa-orchestration-apis
-    service:
-      enabled: true
-      name: gapicb-sg-casa-orchestration-apis
-    canary:
-      previewWeight: 0
-
-
-
-
-
-
-
-values-uat.yaml
-
-
-# UAT-specific values
-
-volumes:
-  additional:
-    - name: secrets
-      secret:
-        secretName: "gapicb-sg-enaas-file-credhub"
-        items:
-          - key: mainframe-p12-file-ref
-            path: mainframe-p12-file-ref.p12
-
-hpa:
-  minReplicas: 1
-  maxReplicas: 1
-
-env:
-  spring.profiles.active: uat
-  APPDYNAMICS_AGENT_TIER_NAME: gapicb-sg-casa-orchestration-apis
-  OTEL_SERVICE_NAME: gapicb-sg-casa-orchestration-apis
-
-services:
   secrets:
     - gapicb-sg-enc-enaas-mf-credhub
 
@@ -105,6 +71,15 @@ additionalEnv:
       fieldRef:
         fieldPath: metadata.name
 
+deploymentStrategy:
+  pipeline:
+    routename: gapicb-sg-casa-orchestration-apis
+    service:
+      name: gapicb-sg-casa-orchestration-apis
+      enabled: true
+    canary:
+      previewWeight: 0
+
 resources:
   limits:
     cpu: 2000m
@@ -114,22 +89,15 @@ resources:
     memory: 1.5Gi
 
 
+# UAT-specific overrides
+
+env:
+  spring.profiles.active: uat
 
 
 
-values-prod.yaml
 
-
-# Prod-specific values
-
-volumes:
-  additional:
-    - name: secrets
-      secret:
-        secretName: "gapicb-sg-enaas-file-credhub"
-        items:
-          - key: mainframe-p12-file-ref
-            path: mainframe-p12-file-ref.p12
+# PROD-specific overrides
 
 route:
   hostname: "gapicb-sg-casa-orchestration-apis.gapi-cb-sg.ocp.sgp.dbs.com"
@@ -140,36 +108,6 @@ hpa:
 
 env:
   spring.profiles.active: prod
-  APPDYNAMICS_AGENT_TIER_NAME: gapicb-sg-casa-orchestration-apis
-  OTEL_SERVICE_NAME: gapicb-sg-casa-orchestration-apis
 
-services:
-  configmaps:
-    - gapicb-sg-casa-orchestration-apis
-    - gapi-common-config-v1
-    - gapi-otel-config-v1
-    - gapi-appd-config
-    - gapicb-sg-casa-orchestration-apis-errors
-    - gapicb-sg-casa-orchestration-apis-access
-    - gapicb-sg-casa-summary-api-v1
-  secrets:
-    - gapicb-sg-enc-enaas-mf-credhub
 
-additionalEnv:
-  - name: SPRING_APPLICATION_JSON
-    valueFrom:
-      configMapKeyRef:
-        name: gapicb-sg-casa-orchestration-apis
-        key: gapicb-sg-casa-orchestration-apis.json
-  - name: APPDYNAMICS_AGENT_NODE_NAME
-    valueFrom:
-      fieldRef:
-        fieldPath: metadata.name
 
-resources:
-  limits:
-    cpu: 2000m
-    memory: 2Gi
-  requests:
-    cpu: 1000m
-    memory: 1.5Gi
