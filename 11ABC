@@ -1,113 +1,28 @@
-# Default values for deployment.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
 
-volumes:
-  additional:
-    - name: secrets
-      secret:
-        secretName: "gapicb-sg-enaas-file-credhub"
-        items:
-          - key: mainframe-p12-file-ref
-            path: mainframe-p12-file-ref.p12
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
-volumeMounts:
-  additional:
-    - name: secrets
-      mountPath: /mnt/secrets
+@Data
+@Component
+@ConfigurationProperties(prefix = "channel-api-config")
+public class ChannelApiConfigProperties {
 
-replicaCount: 1
+    private Map<String, String> configs = new HashMap<>();
 
-route:
-  path: /
-  enabled: true
-  hostname: ""
+    public List<String> getAllowedChannels(String apiName) {
+        String raw = configs.get(apiName);
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
 
-image:
-  repository: image-registry.openshift-image-registry.svc:5000
-  name: gapicb-sg-casa-orchestration-apis
-  pullPolicy: IfNotPresent
-  tag: latest
-
-service:
-  ports: ["8080"]
-
-controller:
-  enabled: true
-  type: deployment-canary
-
-hpa:
-  enabled: true
-  minReplicas: 1
-  maxReplicas: 1
-  metrics:
-    cpuUtilization: 85
-    memoryUtilization: 85
-
-env:
-  http.connection.log.enableFilter: true
-  APPDYNAMICS_AGENT_TIER_NAME: gapicb-sg-casa-orchestration-apis
-  OTEL_SERVICE_NAME: gapicb-sg-casa-orchestration-apis
-
-services:
-  configmaps:
-    - gapicb-sg-casa-orchestration-apis
-    - gapi-common-config-v1
-    - gapi-otel-config-v1
-    - gapi-appd-config
-    - gapicb-sg-casa-orchestration-apis-errors
-    - gapicb-sg-casa-orchestration-apis-access
-  secrets:
-    - gapicb-sg-enc-enaas-mf-credhub
-
-additionalEnv:
-  - name: SPRING_APPLICATION_JSON
-    valueFrom:
-      configMapKeyRef:
-        name: gapicb-sg-casa-orchestration-apis
-        key: gapicb-sg-casa-orchestration-apis.json
-  - name: APPDYNAMICS_AGENT_NODE_NAME
-    valueFrom:
-      fieldRef:
-        fieldPath: metadata.name
-
-deploymentStrategy:
-  pipeline:
-    routename: gapicb-sg-casa-orchestration-apis
-    service:
-      name: gapicb-sg-casa-orchestration-apis
-      enabled: true
-    canary:
-      previewWeight: 0
-
-resources:
-  limits:
-    cpu: 2000m
-    memory: 2Gi
-  requests:
-    cpu: 1000m
-    memory: 1.5Gi
-
-
-# UAT-specific overrides
-
-env:
-  spring.profiles.active: uat
-
-
-
-
-# PROD-specific overrides
-
-route:
-  hostname: "gapicb-sg-casa-orchestration-apis.gapi-cb-sg.ocp.sgp.dbs.com"
-
-hpa:
-  minReplicas: 5
-  maxReplicas: 10
-
-env:
-  spring.profiles.active: prod
-
-
-
+        return Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .toList();
+    }
+}
